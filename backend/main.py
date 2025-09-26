@@ -279,6 +279,23 @@ def register_device():
         logger.error(f"Error registering device: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500
 
+@app.route('/')
+def home():
+    """Welcome endpoint with API information"""
+    return jsonify({
+        'message': 'Fall Detection API is running!',
+        'version': '1.0.0',
+        'status': 'operational',
+        'endpoints': {
+            '/health': 'Health check endpoint',
+            '/predict': 'Fall prediction endpoint (POST)',
+            '/register-device': 'Device registration endpoint (POST)',
+            '/fall-events': 'Get fall events history (GET)'
+        },
+        'documentation': 'https://github.com/devendra011396/fall-detect-system',
+        'timestamp': datetime.utcnow().isoformat()
+    })
+
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
