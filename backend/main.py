@@ -554,36 +554,40 @@ def get_fall_events():
         logger.error(f"Error getting fall events: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500
 
+# Initialize systems when module is imported (works with gunicorn)
+logger.info("=== INITIALIZING FALL DETECTION API ===")
+
+# Initialize Firebase
+logger.info("Step 1: Initializing Firebase...")
+db = initialize_firebase()
+if db:
+    logger.info("✓ Firebase initialization successful")
+else:
+    logger.error("✗ Firebase initialization failed")
+
+# Load ML model
+logger.info("Step 2: Loading ML model...")
+load_ml_model()
+if fall_model:
+    logger.info("✓ ML model loading successful")
+else:
+    logger.error("✗ ML model loading failed")
+
+# Final status
+logger.info("=== INITIALIZATION COMPLETE ===")
+logger.info(f"Firebase connected: {db is not None}")
+logger.info(f"Model loaded: {fall_model is not None}")
+
+if db is not None and fall_model is not None:
+    logger.info("🎉 All systems operational!")
+elif db is not None or fall_model is not None:
+    logger.warning("⚠️ Partial system functionality")
+else:
+    logger.error("❌ Critical systems failed - API will have limited functionality")
+
 if __name__ == '__main__':
-    logger.info("=== INITIALIZING FALL DETECTION API ===")
-    
-    # Initialize Firebase
-    logger.info("Step 1: Initializing Firebase...")
-    db = initialize_firebase()
-    if db:
-        logger.info("✓ Firebase initialization successful")
-    else:
-        logger.error("✗ Firebase initialization failed")
-    
-    # Load ML model
-    logger.info("Step 2: Loading ML model...")
-    load_ml_model()
-    if fall_model:
-        logger.info("✓ ML model loading successful")
-    else:
-        logger.error("✗ ML model loading failed")
-    
-    # Final status
-    logger.info("=== INITIALIZATION COMPLETE ===")
-    logger.info(f"Firebase connected: {db is not None}")
-    logger.info(f"Model loaded: {fall_model is not None}")
-    
-    if db is not None and fall_model is not None:
-        logger.info("🎉 All systems operational!")
-    elif db is not None or fall_model is not None:
-        logger.warning("⚠️ Partial system functionality")
-    else:
-        logger.error("❌ Critical systems failed - API will have limited functionality")
+    # If running directly (not via gunicorn), the initialization above already ran
+    logger.info("Running Flask app directly (not via gunicorn)")
     
     # Start the Flask application
     port = int(os.environ.get('PORT', 5000))
