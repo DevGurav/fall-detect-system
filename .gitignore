@@ -6,7 +6,6 @@
 backend/.env
 backend/*.json
 backend/*firebase*.json
-backend/fall_model.pkl
 backend/__pycache__/
 backend/*.pyc
 

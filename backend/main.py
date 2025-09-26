@@ -7,7 +7,7 @@ import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import firebase_admin
-from firebase_admin import credentials, firestore, messaging
+from firebase_admin import credentials, firestore, messaging, messaging
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -27,7 +27,12 @@ def initialize_firebase():
     try:
         if not firebase_admin._apps:
             # Use service account key from environment variable
-            service_account_info = json.loads(os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY', '{}'))
+            service_account_key = os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY')
+            if not service_account_key:
+                logger.error("FIREBASE_SERVICE_ACCOUNT_KEY environment variable not set")
+                return None
+                
+            service_account_info = json.loads(service_account_key)
             cred = credentials.Certificate(service_account_info)
             firebase_admin.initialize_app(cred)
         
@@ -42,6 +47,23 @@ def initialize_firebase():
 # Global variables
 db = None
 fall_model = None
+
+@app.route('/', methods=['GET'])
+def root():
+    """API welcome page with documentation"""
+    return jsonify({
+        'message': 'Fall Detection API is running!',
+        'version': '1.0.0',
+        'status': 'operational',
+        'endpoints': {
+            '/health': 'Health check endpoint',
+            '/predict': 'Fall prediction endpoint (POST)',
+            '/register-device': 'Device registration endpoint (POST)',
+            '/fall-events': 'Get fall events history (GET)'
+        },
+        'documentation': 'https://github.com/devendra011396/fall-detect-system',
+        'timestamp': datetime.utcnow().isoformat()
+    })
 
 def load_ml_model():
     """Load the pre-trained fall detection model"""
@@ -125,45 +147,53 @@ def send_fall_notification(device_tokens, event_id):
         return False
         
     try:
-        # Create notification message
-        message = messaging.MulticastMessage(
-            notification=messaging.Notification(
-                title='🚨 Fall Detected!',
-                body='A fall has been detected. Please check immediately.'
-            ),
-            data={
-                'event_id': event_id,
-                'type': 'fall_detection',
-                'timestamp': datetime.utcnow().isoformat()
-            },
-            tokens=device_tokens,
-            android=messaging.AndroidConfig(
-                notification=messaging.AndroidNotification(
-                    icon='ic_notification',
-                    color='#ff0000',
-                    sound='default'
-                ),
-                priority='high'
-            ),
-            apns=messaging.APNSConfig(
-                payload=messaging.APNSPayload(
-                    aps=messaging.Aps(
-                        alert=messaging.ApsAlert(
-                            title='🚨 Fall Detected!',
-                            body='A fall has been detected. Please check immediately.'
+        # Send notification to each token individually
+        successful_sends = 0
+        failed_sends = 0
+        
+        for token in device_tokens:
+            try:
+                message = messaging.Message(
+                    notification=messaging.Notification(
+                        title='🚨 Fall Detected!',
+                        body='A fall has been detected. Please check immediately.'
+                    ),
+                    data={
+                        'event_id': event_id,
+                        'type': 'fall_detection',
+                        'timestamp': datetime.utcnow().isoformat()
+                    },
+                    token=token,
+                    android=messaging.AndroidConfig(
+                        notification=messaging.AndroidNotification(
+                            icon='ic_notification',
+                            color='#ff0000',
+                            sound='default'
                         ),
-                        sound='default',
-                        badge=1
+                        priority='high'
+                    ),
+                    apns=messaging.APNSConfig(
+                        payload=messaging.APNSPayload(
+                            aps=messaging.Aps(
+                                alert=messaging.ApsAlert(
+                                    title='🚨 Fall Detected!',
+                                    body='A fall has been detected. Please check immediately.'
+                                ),
+                                sound='default',
+                                badge=1
+                            )
+                        )
                     )
                 )
-            )
-        )
-        
-        # Send notification
-        response = messaging.send_multicast(message)
-        logger.info(f"Notification sent successfully. Success: {response.success_count}, Failed: {response.failure_count}")
-        
-        return response.success_count > 0
+                
+                messaging.send(message)
+                successful_sends += 1
+            except Exception as e:
+                logger.error(f"Failed to send notification to token {token}: {str(e)}")
+                failed_sends += 1
+                
+        logger.info(f"Notification sent successfully to {successful_sends} devices, failed: {failed_sends}")
+        return successful_sends > 0
         
     except Exception as e:
         logger.error(f"Failed to send notification: {str(e)}")
@@ -318,7 +348,7 @@ def get_fall_events():
         device_id = request.args.get('device_id')
         
         # Query fall events
-        events_ref = db.collection('fall_events').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(limit)
+        events_ref = db.collection('fall_events').order_by('timestamp', direction='DESCENDING').limit(limit)
         
         if device_id:
             events_ref = events_ref.where('device_id', '==', device_id)
