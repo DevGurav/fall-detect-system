@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import logging
 from datetime import datetime
@@ -8,7 +9,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime
 import firebase_admin
-from firebase_admin import credentials, firestore, messaging, messaging
+from firebase_admin import credentials, firestore, messaging
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -18,31 +19,96 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure detailed logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
+# Log environment information
+logger.info("=== FALL DETECTION API STARTUP ===")
+logger.info(f"Python version: {sys.version}")
+logger.info(f"Working directory: {os.getcwd()}")
+logger.info(f"App directory: {os.path.dirname(__file__)}")
+
+# Check environment variables
+env_vars = ['FIREBASE_SERVICE_ACCOUNT_KEY', 'PORT']
+for var in env_vars:
+    value = os.getenv(var)
+    if value:
+        logger.info(f"Environment variable {var} is set (length: {len(value)})")
+    else:
+        logger.warning(f"Environment variable {var} is NOT set")
 
 # Initialize Firebase Admin SDK
 def initialize_firebase():
-    """Initialize Firebase Admin SDK"""
+    """Initialize Firebase Admin SDK with detailed logging"""
     try:
-        if not firebase_admin._apps:
-            # Use service account key from environment variable
-            service_account_key = os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY')
-            if not service_account_key:
-                logger.error("FIREBASE_SERVICE_ACCOUNT_KEY environment variable not set")
-                return None
-                
+        logger.info("Starting Firebase initialization...")
+        
+        if firebase_admin._apps:
+            logger.info("Firebase app already exists, using existing instance")
+            db = firestore.client()
+            logger.info("Firebase Firestore client ready")
+            return db
+        
+        # Get service account key from environment
+        service_account_key = os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY')
+        if not service_account_key:
+            logger.error("FIREBASE_SERVICE_ACCOUNT_KEY environment variable is missing")
+            logger.error("Please set this environment variable with your Firebase service account JSON")
+            return None
+            
+        logger.info(f"Firebase service account key found (length: {len(service_account_key)})")
+        
+        # Try to parse JSON
+        try:
             service_account_info = json.loads(service_account_key)
+            logger.info("Service account JSON parsed successfully")
+            
+            # Log key fields (without sensitive data)
+            required_fields = ['type', 'project_id', 'private_key_id', 'client_email', 'client_id', 'auth_uri', 'token_uri']
+            missing_fields = [field for field in required_fields if field not in service_account_info]
+            
+            if missing_fields:
+                logger.error(f"Missing required fields in service account JSON: {missing_fields}")
+                return None
+            
+            logger.info(f"Service account project_id: {service_account_info.get('project_id')}")
+            logger.info(f"Service account client_email: {service_account_info.get('client_email')}")
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse Firebase service account JSON: {e}")
+            logger.error("Make sure the JSON is properly formatted and not wrapped in quotes")
+            return None
+            
+        # Initialize Firebase Admin
+        try:
             cred = credentials.Certificate(service_account_info)
             firebase_admin.initialize_app(cred)
+            logger.info("Firebase Admin SDK initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Firebase Admin SDK: {e}")
+            return None
         
         # Initialize Firestore client
-        db = firestore.client()
-        logger.info("Firebase initialized successfully")
-        return db
+        try:
+            db = firestore.client()
+            logger.info("Firestore client initialized successfully")
+            
+            # Test Firestore connection
+            test_collection = db.collection('test')
+            logger.info("Firestore connection test passed")
+            return db
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize Firestore client: {e}")
+            return None
+        
     except Exception as e:
-        logger.error(f"Failed to initialize Firebase: {str(e)}")
+        logger.error(f"Unexpected error during Firebase initialization: {e}")
+        logger.exception("Full traceback:")
         return None
 
 # Global variables
@@ -67,25 +133,64 @@ def root():
     })
 
 def load_ml_model():
-    """Load the pre-trained fall detection model"""
+    """Load the pre-trained fall detection model with detailed logging"""
     global fall_model
     try:
+        logger.info("Starting ML model loading...")
+        
+        # Check for model file
         model_path = os.path.join(os.path.dirname(__file__), 'fall_model.pkl')
+        logger.info(f"Looking for model file at: {model_path}")
+        
         if os.path.exists(model_path):
-            fall_model = joblib.load(model_path)
-            logger.info("Fall detection model loaded successfully")
+            logger.info("Model file found, loading...")
+            try:
+                fall_model = joblib.load(model_path)
+                logger.info("Fall detection model loaded successfully")
+                
+                # Test the model
+                try:
+                    test_data = np.array([[1.0, 2.0, 3.0, 0.1, 0.2, 0.3]])
+                    test_prediction = fall_model.predict(test_data)
+                    logger.info(f"Model test prediction: {test_prediction}")
+                except Exception as e:
+                    logger.warning(f"Model test failed: {e}")
+                    
+            except Exception as e:
+                logger.error(f"Failed to load model file: {e}")
+                fall_model = None
         else:
-            logger.warning("Fall model not found. Creating dummy model for testing.")
-            # Create a dummy model for demonstration
-            from sklearn.ensemble import RandomForestClassifier
-            fall_model = RandomForestClassifier(n_estimators=100, random_state=42)
-            # Create dummy training data (6 features: accelX, accelY, accelZ, gyroX, gyroY, gyroZ)
-            X_dummy = np.random.randn(100, 6)
-            y_dummy = np.random.randint(0, 2, 100)
-            fall_model.fit(X_dummy, y_dummy)
-            logger.info("Dummy model created for testing")
+            logger.warning(f"Fall model file not found at {model_path}")
+            logger.info("Creating dummy model for testing...")
+            
+            try:
+                # Create a dummy model for demonstration
+                from sklearn.ensemble import RandomForestClassifier
+                fall_model = RandomForestClassifier(n_estimators=100, random_state=42)
+                
+                # Create dummy training data (6 features: accelX, accelY, accelZ, gyroX, gyroY, gyroZ)
+                X_dummy = np.random.randn(100, 6)
+                y_dummy = np.random.randint(0, 2, 100)
+                fall_model.fit(X_dummy, y_dummy)
+                logger.info("Dummy model created and trained successfully")
+                
+                # Test dummy model
+                test_data = np.array([[1.0, 2.0, 3.0, 0.1, 0.2, 0.3]])
+                test_prediction = fall_model.predict(test_data)
+                logger.info(f"Dummy model test prediction: {test_prediction}")
+                
+            except Exception as e:
+                logger.error(f"Failed to create dummy model: {e}")
+                fall_model = None
+        
+        if fall_model is not None:
+            logger.info("Model loading completed successfully")
+        else:
+            logger.error("Model loading failed completely")
+            
     except Exception as e:
-        logger.error(f"Failed to load ML model: {str(e)}")
+        logger.error(f"Unexpected error during model loading: {e}")
+        logger.exception("Full traceback:")
         fall_model = None
 
 def predict_fall(sensor_data):
@@ -329,13 +434,91 @@ def home():
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint"""
-    return jsonify({
+    """Enhanced health check endpoint with detailed diagnostics"""
+    logger.info("Health check requested")
+    
+    # Basic status
+    status_info = {
         'status': 'healthy',
-        'model_loaded': fall_model is not None,
+        'timestamp': datetime.utcnow().isoformat(),
+        'version': '2.0.0',
+        'environment': 'production' if not os.getenv('DEBUG') else 'development'
+    }
+    
+    # Firebase connection status
+    firebase_status = {
         'firebase_connected': db is not None,
-        'timestamp': datetime.utcnow().isoformat()
-    })
+        'firebase_app_count': len(firebase_admin._apps) if firebase_admin._apps else 0
+    }
+    
+    if db is not None:
+        try:
+            # Test Firestore connection
+            test_ref = db.collection('health_check').document('test')
+            test_ref.set({'timestamp': datetime.utcnow()})
+            firebase_status['firestore_write_test'] = True
+            logger.info("Firestore write test passed")
+        except Exception as e:
+            firebase_status['firestore_write_test'] = False
+            firebase_status['firestore_error'] = str(e)
+            logger.error(f"Firestore write test failed: {e}")
+    else:
+        firebase_status['firestore_write_test'] = False
+        firebase_status['firebase_error'] = 'Database connection not established'
+    
+    # Model status
+    model_status = {
+        'model_loaded': fall_model is not None,
+        'model_type': str(type(fall_model).__name__) if fall_model else None
+    }
+    
+    if fall_model is not None:
+        try:
+            # Test model prediction
+            test_data = np.array([[1.0, 2.0, 3.0, 0.1, 0.2, 0.3]])
+            test_prediction = fall_model.predict(test_data)
+            model_status['model_test'] = True
+            model_status['test_prediction'] = int(test_prediction[0])
+            logger.info("Model prediction test passed")
+        except Exception as e:
+            model_status['model_test'] = False
+            model_status['model_error'] = str(e)
+            logger.error(f"Model prediction test failed: {e}")
+    else:
+        model_status['model_test'] = False
+        model_status['model_error'] = 'Model not loaded'
+    
+    # Environment variables status
+    env_status = {}
+    for var in ['FIREBASE_SERVICE_ACCOUNT_KEY', 'PORT']:
+        value = os.getenv(var)
+        env_status[f'{var.lower()}_set'] = value is not None
+        if value:
+            env_status[f'{var.lower()}_length'] = len(value)
+    
+    # Combine all status information
+    response = {
+        **status_info,
+        **firebase_status,
+        **model_status,
+        'environment_variables': env_status,
+        'system_info': {
+            'python_version': sys.version.split()[0],
+            'working_directory': os.getcwd(),
+            'app_directory': os.path.dirname(__file__)
+        }
+    }
+    
+    # Determine overall health
+    if firebase_status['firebase_connected'] and model_status['model_loaded']:
+        response['overall_status'] = 'fully_operational'
+    elif firebase_status['firebase_connected'] or model_status['model_loaded']:
+        response['overall_status'] = 'partially_operational'
+    else:
+        response['overall_status'] = 'degraded'
+    
+    logger.info(f"Health check response: {response['overall_status']}")
+    return jsonify(response)
 
 @app.route('/fall-events', methods=['GET'])
 def get_fall_events():
@@ -372,10 +555,42 @@ def get_fall_events():
         return jsonify({'error': 'Internal server error'}), 500
 
 if __name__ == '__main__':
-    # Initialize Firebase and load model
-    db = initialize_firebase()
-    load_ml_model()
+    logger.info("=== INITIALIZING FALL DETECTION API ===")
     
-    # Run the app
+    # Initialize Firebase
+    logger.info("Step 1: Initializing Firebase...")
+    db = initialize_firebase()
+    if db:
+        logger.info("✓ Firebase initialization successful")
+    else:
+        logger.error("✗ Firebase initialization failed")
+    
+    # Load ML model
+    logger.info("Step 2: Loading ML model...")
+    load_ml_model()
+    if fall_model:
+        logger.info("✓ ML model loading successful")
+    else:
+        logger.error("✗ ML model loading failed")
+    
+    # Final status
+    logger.info("=== INITIALIZATION COMPLETE ===")
+    logger.info(f"Firebase connected: {db is not None}")
+    logger.info(f"Model loaded: {fall_model is not None}")
+    
+    if db is not None and fall_model is not None:
+        logger.info("🎉 All systems operational!")
+    elif db is not None or fall_model is not None:
+        logger.warning("⚠️ Partial system functionality")
+    else:
+        logger.error("❌ Critical systems failed - API will have limited functionality")
+    
+    # Start the Flask application
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    logger.info(f"Starting Flask app on port {port}")
+    
+    try:
+        app.run(host='0.0.0.0', port=port, debug=False)
+    except Exception as e:
+        logger.error(f"Failed to start Flask app: {e}")
+        logger.exception("Full traceback:")
