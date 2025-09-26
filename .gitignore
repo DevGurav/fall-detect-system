@@ -1,0 +1,125 @@
+# ===============================
+# SENSITIVE FILES - NEVER COMMIT!
+# ===============================
+
+# Backend Environment Variables
+backend/.env
+backend/*.json
+backend/*firebase*.json
+backend/fall_model.pkl
+backend/__pycache__/
+backend/*.pyc
+
+# Firebase Service Account Keys
+*firebase-adminsdk*.json
+*serviceAccountKey*.json
+*google-services*.json
+GoogleService-Info.plist
+
+# Environment files
+.env
+.env.local
+.env.production
+.env.staging
+
+# ===============================
+# BUILD & CACHE FILES
+# ===============================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ===============================
+# FLUTTER & DART SPECIFIC
+# ===============================
+
+# Flutter/Dart build outputs
+**/build/
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+.flutter-plugins-dependencies
+
+# Generated Firebase files (keep firebase_options.dart as it's safe)
+# mobile_app/lib/firebase_options.dart  # This file is safe to commit
+
+# Platform specific
+mobile_app/android/app/google-services.json
+mobile_app/ios/Runner/GoogleService-Info.plist
+mobile_app/macos/Runner/GoogleService-Info.plist
+
+# ===============================
+# SYSTEM & EDITOR FILES
+# ===============================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# IDE & Editors
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# ===============================
+# PROJECT SPECIFIC
+# ===============================
+
+# ML Models (may be large)
+*.pkl
+*.model
+*.h5
+*.pb
+
+# Test files
+test_uploads/
+temp/
+tmp/
+
+# Documentation builds
+docs/_build/
