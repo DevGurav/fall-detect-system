@@ -6,6 +6,7 @@ import joblib
 import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from datetime import datetime
 import firebase_admin
 from firebase_admin import credentials, firestore, messaging, messaging
 from dotenv import load_dotenv
@@ -91,7 +92,7 @@ def predict_fall(sensor_data):
     """Predict if fall occurred based on sensor data"""
     if fall_model is None:
         logger.error("No model available for prediction")
-        return False
+        return False, 0.0
     
     try:
         # Extract features from sensor data
@@ -124,7 +125,7 @@ def log_fall_event(device_id, sensor_data, fall_detected, confidence):
     try:
         event_data = {
             'device_id': device_id,
-            'timestamp': firestore.SERVER_TIMESTAMP,
+            'timestamp': datetime.utcnow(),
             'sensor_data': sensor_data,
             'fall_detected': fall_detected,
             'confidence': confidence,
@@ -291,7 +292,7 @@ def register_device():
             device_data = {
                 'device_id': device_id,
                 'fcm_token': fcm_token,
-                'registered_at': firestore.SERVER_TIMESTAMP,
+                'registered_at': datetime.utcnow(),
                 'active': True
             }
             
