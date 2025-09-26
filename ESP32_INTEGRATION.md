@@ -1,53 +1,56 @@
-# ESP32 Integration Guide
+# ESP32 Fall Detection Integration
 
-This guide shows how to integrate the ESP32 wristband device with the fall detection system.
+This document provides complete ESP32 code and setup instructions for the fall detection system.
 
-## 🔌 Hardware Setup
+## � Hardware Requirements
 
-### Required Components
-- ESP32 development board (ESP32-WROOM-32)
-- MPU6050 accelerometer/gyroscope sensor
-- Jumper wires
-- Breadboard or PCB
-- 3.7V Li-Po battery (optional, for portability)
+- **ESP32 Development Board** (ESP32-WROOM-32 or similar)
+- **MPU6050 Accelerometer + Gyroscope Module**
+- **Jumper Wires**
+- **Breadboard** (optional)
+- **USB Cable** for programming
+- **Power Supply** (battery pack for wearable use)
 
-### Wiring Connections
+## 📐 Wiring Diagram
+
 ```
-ESP32    →    MPU6050
-3.3V     →    VCC
-GND      →    GND
-GPIO21   →    SDA
-GPIO22   →    SCL
+ESP32          MPU6050
+-----          -------
+3.3V    -----> VCC
+GND     -----> GND
+GPIO21  -----> SDA (I2C Data)
+GPIO22  -----> SCL (I2C Clock)
 ```
 
-## 📝 Arduino Code Example
+## � Arduino IDE Setup
 
-### Required Libraries
-Install these libraries through Arduino IDE Library Manager:
-- WiFi (ESP32 built-in)
-- HTTPClient (ESP32 built-in)
-- ArduinoJson
-- MPU6050 by Electronic Cats
+### 1. Install ESP32 Board Package
+1. Open Arduino IDE
+2. Go to **File → Preferences**
+3. Add this URL to "Additional Board Manager URLs":
+   ```
+   https://dl.espressif.com/dl/package_esp32_index.json
+   ```
+4. Go to **Tools → Board → Boards Manager**
+5. Search for "ESP32" and install **ESP32 by Espressif Systems**
 
-### Complete ESP32 Code
+### 2. Install Required Libraries
+Go to **Sketch → Include Library → Manage Libraries** and install:
+- **MPU6050** by Electronic Cats (or Jeff Rowberg)
+- **ArduinoJson** by Benoit Blanchon
+- **HTTPClient** (built-in with ESP32)
+- **WiFi** (built-in with ESP32)
 
-```cpp
-#include <WiFi.h>
-#include <HTTPClient.h>
-#include <ArduinoJson.h>
-#include <Wire.h>
-#include <MPU6050.h>
+### 3. Board Configuration
+- **Board**: "ESP32 Dev Module"
+- **Upload Speed**: "921600"
+- **CPU Frequency**: "240MHz (WiFi/BT)"
+- **Flash Size**: "4MB (32Mb)"
+- **Partition Scheme**: "Default 4MB with spiffs"
 
-// WiFi credentials
-const char* ssid = "YOUR_WIFI_SSID";
-const char* password = "YOUR_WIFI_PASSWORD";
+## 🚀 Complete ESP32 Code
 
-// Backend API URL
-const char* serverURL = "https://your-backend-url.onrender.com/predict";
-
-// Device configuration
-const char* deviceId = "esp32_wristband_001";
-const int measurementInterval = 1000; // milliseconds
+Save this as `fall_detection_esp32.ino`:
 const float fallThreshold = 2.5; // G-force threshold for potential fall
 
 // Hardware setup
