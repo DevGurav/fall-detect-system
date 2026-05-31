@@ -1,124 +1,88 @@
-# ===============================
-# SENSITIVE FILES - NEVER COMMIT!
-# ===============================
-
-# Backend Environment Variables
-backend/.env
-backend/*.json
-backend/*firebase*.json
-backend/__pycache__/
-backend/*.pyc
-
-# Firebase Service Account Keys
-*firebase-adminsdk*.json
-*serviceAccountKey*.json
-*google-services*.json
-GoogleService-Info.plist
-
-# Environment files
-.env
-.env.local
-.env.production
-.env.staging
-
-# ===============================
-# BUILD & CACHE FILES
-# ===============================
-
-# Python
+# ─── Python ──────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual Environments
+.venv/
 venv/
 env/
 ENV/
-env.bak/
-venv.bak/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
 
-# ===============================
-# FLUTTER & DART SPECIFIC
-# ===============================
+# uv
+.uv-cache/
 
-# Flutter/Dart build outputs
-**/build/
+# Jupyter
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# ─── Data (download via ml/DATA.md instructions; not committed) ──
+ml/data/raw/**
+ml/data/processed/**
+ml/data/interim/**
+ml/data/external/**
+!ml/data/raw/.gitkeep
+!ml/data/processed/.gitkeep
+!ml/data/interim/.gitkeep
+!ml/data/external/.gitkeep
+
+# ─── ML artifacts ────────────────────────────────────────────────
+ml/mlruns/
+ml/mlartifacts/
+ml/models/*.pt
+ml/models/*.pth
+ml/models/*.onnx
+ml/models/*.tflite
+ml/wandb/
+ml/lightning_logs/
+
+# ─── Secrets / env ───────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+serviceAccountKey.json
+
+# ─── Node / Next.js ──────────────────────────────────────────────
+node_modules/
+.next/
+out/
+.turbo/
+.pnpm-store/
+
+# ─── Flutter / Dart ──────────────────────────────────────────────
 .dart_tool/
-.packages
+.flutter-plugins
+.flutter-plugins-dependencies
 .pub-cache/
 .pub/
-.flutter-plugins-dependencies
+**/ios/Pods/
+**/ios/Flutter/flutter_assets/
+**/android/.gradle/
 
-# Generated Firebase files (keep firebase_options.dart as it's safe)
-# mobile_app/lib/firebase_options.dart  # This file is safe to commit
+# ─── ESP-IDF / PlatformIO ────────────────────────────────────────
+edge/build/
+edge/sdkconfig.old
+edge/.pio/
 
-# Platform specific
-mobile_app/android/app/google-services.json
-mobile_app/ios/Runner/GoogleService-Info.plist
-mobile_app/macos/Runner/GoogleService-Info.plist
-
-# ===============================
-# SYSTEM & EDITOR FILES
-# ===============================
-
-# macOS
-.DS_Store
-.AppleDouble
-.LSOverride
-
-# Windows
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-$RECYCLE.BIN/
-
-# Linux
-*~
-
-# IDE & Editors
-.vscode/settings.json
+# ─── IDE / editor ────────────────────────────────────────────────
+.vscode/
 .idea/
 *.swp
 *.swo
-*~
+.history/
 
-# Logs
-*.log
-logs/
-
-# ===============================
-# PROJECT SPECIFIC
-# ===============================
-
-# ML Models (may be large)
-*.pkl
-*.model
-*.h5
-*.pb
-
-# Test files
-test_uploads/
-temp/
-tmp/
-
-# Documentation builds
-docs/_build/
+# ─── OS ──────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
