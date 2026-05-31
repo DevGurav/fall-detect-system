@@ -310,6 +310,27 @@ Implementation notes:
 
 After this phase, the repo contains: working ML pipeline code (Phase 6) + comprehensive design + audit + decision documentation (Phase 7) + compliance documentation suitable for a real product launch (Phase 8) + the first piece of executable tooling that verifies the dataset is in the right shape before any training cost is sunk. Five atomic commits + a push. Project moves into Phase 9 (EDA notebook + MLflow scaffolding + baseline training).
 
+### Bug fixes surfaced by the first verify run
+
+Running `fg-data verify` end-to-end for the first time surfaced two real defects, each fixed in its own atomic commit before moving on:
+
+1. **`fg-data verify` crashed on the Windows console** because of unicode check-marks (✓ ✗) hitting the `cp1252` codec. Replaced them with ASCII tokens (`[OK]`, `[FAIL]`, `[WARN]`, `OK`, `MISSING`). Output is now portable across Windows / macOS / Linux terminals without depending on a `PYTHONIOENCODING=utf-8` env hack.
+
+2. **`discover_recordings()` was double-counting recordings.** The glob `U*_R*_accel.csv` accidentally matched both `U01_R01_accel.csv` **and** `U01_R01_vertical_accel.csv` — both end in `_accel.csv`. So every recording was being returned twice. Caught immediately by the verify output: a young-only × 3-trial movement was showing 84 entries (= 2 × 14 × 3) when the correct count is 42. The fix is a one-liner: after the regex match, `if m.group("sensor") != "accel": continue`. Post-fix totals reconcile with the WEDA-FALL README (350 falls, 619 ADL, 969 total) and with the standalone `fall_timestamps.csv` row count.
+
+These are exactly the class of bug `fg-data verify` is meant to catch — the CLI paid off on its very first run. All 23 math tests still pass after the loader fix (the loader was returning duplicates of valid data, not bad data, so the windowing + feature code was correct, just doing 2× the work).
+
+### Environment + run snapshot
+
+For reproducibility of this session:
+
+- **Python**: CPython 3.14.2 (Windows x86_64)
+- **uv**: 0.11.17 (installed via `python -m pip install uv`, invoked as `python -m uv`)
+- **Key resolved versions**: PyTorch 2.12.0, scikit-learn 1.8.0, scipy 1.17.1, pandas 2.3.3, mlflow 3.12.0, numpy 2.4.6, typer 0.26.4, rich 15.0.0
+- **`uv sync` time**: ~5 minutes cold (235 packages resolved, 182 installed; later +11 with `--extra dev`)
+- **`pytest` time**: 0.30–0.74 s for the 23 tests
+- **`fg-data verify` time**: < 2 s on the local 1.2 GB WEDA-FALL copy
+
 ---
 
 > _End of current sessions. New work appends a new dated section below this line._
