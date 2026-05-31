@@ -26,7 +26,8 @@ def edge(
     batch_size: int = typer.Option(128),
     lr: float = typer.Option(1e-3),
     seed: int = typer.Option(42),
-    pos_weight_scale: float = typer.Option(1.5, help="Extra recall bias on BCE pos_weight."),
+    pos_weight_scale: float = typer.Option(1.0, help="Extra recall bias on BCE pos_weight."),
+    max_fpr_adl: float = typer.Option(0.05, help="FPR-on-ADL cap; recall maximised under it."),
     dataset_root: Path | None = typer.Option(None, help="WEDA-FALL-main dir."),
 ) -> None:
     """Train the ConvLSTM-tiny edge prediction model."""
@@ -38,7 +39,7 @@ def edge(
 
     cfg = TrainConfig(
         epochs=epochs, batch_size=batch_size, lr=lr, seed=seed,
-        pos_weight_scale=pos_weight_scale, synthetic=synthetic,
+        pos_weight_scale=pos_weight_scale, max_fpr_adl=max_fpr_adl, synthetic=synthetic,
     )
     run_training(cfg, dataset_root=dataset_root or DEFAULT_DATASET_ROOT)
 

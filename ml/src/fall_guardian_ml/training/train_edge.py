@@ -34,7 +34,7 @@ from fall_guardian_ml.datasets.edge_dataset import (
 from fall_guardian_ml.eval.metrics import (
     compute_metrics,
     lead_time_stats,
-    pick_threshold_for_recall,
+    pick_threshold_for_fpr,
 )
 from fall_guardian_ml.models.convlstm_tiny import (
     ConvLSTMTinyConfig,
@@ -57,18 +57,24 @@ TARGET_LEAD_MS = 300.0
 class TrainConfig:
     """All knobs for one edge training run — logged verbatim to MLflow params."""
 
-    epochs: int = 40
+    epochs: int = 50
     batch_size: int = 128
     lr: float = 1e-3
-    weight_decay: float = 1e-4
+    # Heavier decoupled weight decay (AdamW) to regularise the deeper v2 net
+    # against the small fall pool. Pairs with the conv/head dropout in the model.
+    weight_decay: float = 5e-4
     test_fraction: float = 0.2          # fraction of SUBJECTS held out for test
     val_fraction: float = 0.15          # fraction of TRAIN subjects used for val
     seed: int = 42
     target_recall: float = TARGET_RECALL
-    # Extra multiplier on the auto neg/pos `pos_weight` in BCE. The staggered
-    # window family already lifts the positive rate, but a pre-impact miss is the
-    # costliest error, so we bias a little harder toward recall (>1.0).
-    pos_weight_scale: float = 1.5
+    # Operating-point objective: pin FPR-on-ADL ≤ this and maximise recall under
+    # it (see eval.metrics.pick_threshold_for_fpr). The comfort budget is the
+    # hard constraint for a daily-wear wearable, so recall is bought within it.
+    max_fpr_adl: float = TARGET_FPR_ADL
+    # Multiplier on the auto neg/pos `pos_weight` in BCE. Kept at 1.0: the
+    # staggered window family already balances classes, and the FPR-constrained
+    # threshold (not loss weighting) is now what controls the comfort budget.
+    pos_weight_scale: float = 1.0
     synthetic: bool = False
     model: ConvLSTMTinyConfig = field(default_factory=ConvLSTMTinyConfig)
 
@@ -161,11 +167,12 @@ def _make_loader(X, y, batch_size, shuffle):
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
 
 
-def _train_loop(model, loaders, cfg: TrainConfig, pos_weight: float, device):
+def _train_loop(model, loaders, cfg: TrainConfig, pos_weight: float, device, val_is_adl):
     import torch
     from torch import nn
 
-    opt = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    # AdamW = decoupled weight decay (proper L2 regularisation for this net).
+    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     loss_fn = nn.BCEWithLogitsLoss(
         pos_weight=torch.tensor([pos_weight], device=device)
     )
@@ -188,14 +195,18 @@ def _train_loop(model, loaders, cfg: TrainConfig, pos_weight: float, device):
             epoch_loss += loss.item() * xb.size(0)
         epoch_loss /= max(len(train_loader.dataset), 1)
 
-        # Validation recall @ 0.5 — a cheap epoch signal for checkpoint selection.
+        # Checkpoint selection aligned with the deployed objective: the best
+        # recall achievable on val while holding FPR-on-ADL ≤ the cap. Selecting
+        # on raw recall@0.5 (the old criterion) rewards exactly the trigger-happy
+        # behaviour we're trying to suppress.
         val_probs, val_y = _infer(model, val_loader, device)
-        val_pred = val_probs >= 0.5
-        tp = float(np.sum(val_pred & (val_y == 1)))
-        fn = float(np.sum(~val_pred & (val_y == 1)))
-        val_recall = tp / (tp + fn) if (tp + fn) else 0.0
+        op = pick_threshold_for_fpr(val_y, val_probs, val_is_adl, cfg.max_fpr_adl)
+        val_recall = op.recall
 
-        history.append({"epoch": epoch, "train_loss": epoch_loss, "val_recall": val_recall})
+        history.append(
+            {"epoch": epoch, "train_loss": epoch_loss,
+             "val_recall_at_fpr": val_recall, "val_threshold": op.threshold}
+        )
         if val_recall >= best_val_recall:
             best_val_recall = val_recall
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
@@ -289,19 +300,28 @@ def run_training(
         pos_weight = auto_pos_weight * cfg.pos_weight_scale
         mlflow.log_params({"auto_pos_weight": round(auto_pos_weight, 3), "pos_weight": round(pos_weight, 3)})
         print(f"[loss] pos_weight = {auto_pos_weight:.2f} (auto) x {cfg.pos_weight_scale} = {pos_weight:.2f}")
-        model, history = _train_loop(model, (train_loader, val_loader), cfg, pos_weight, device)
+        model, history = _train_loop(
+            model, (train_loader, val_loader), cfg, pos_weight, device,
+            bundle.is_adl[split.val_idx],
+        )
         for h in history:
             mlflow.log_metrics(
-                {"train_loss": h["train_loss"], "val_recall": h["val_recall"]}, step=h["epoch"]
+                {"train_loss": h["train_loss"], "val_recall_at_fpr": h["val_recall_at_fpr"]},
+                step=h["epoch"],
             )
 
-        # 6. Pick threshold on VAL to hit the recall target at lowest ADL FPR.
+        # 6. Pick the operating threshold on VAL: highest recall with FPR-on-ADL
+        #    ≤ cap. The comfort budget is the hard constraint, recall is maximised
+        #    under it (replaces the old "hit 95% recall at any FPR cost").
         val_probs, val_y = _infer(model, val_loader, device)
-        val_op = pick_threshold_for_recall(
-            val_y, val_probs, bundle.is_adl[split.val_idx], cfg.target_recall
+        val_op = pick_threshold_for_fpr(
+            val_y, val_probs, bundle.is_adl[split.val_idx], cfg.max_fpr_adl
         )
         threshold = val_op.threshold
-        print(f"[threshold] picked {threshold:.4f} on val (recall {val_op.recall:.3f})")
+        print(
+            f"[threshold] picked {threshold:.4f} on val "
+            f"(recall {val_op.recall:.3f} @ FPR-ADL {val_op.fpr_adl:.3f}, cap {cfg.max_fpr_adl})"
+        )
 
         # 7. Evaluate on the held-out TEST subjects at that threshold.
         test_loader = _make_loader(
@@ -400,6 +420,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--lr", type=float, default=TrainConfig.lr)
     p.add_argument("--seed", type=int, default=TrainConfig.seed)
     p.add_argument("--pos-weight-scale", type=float, default=TrainConfig.pos_weight_scale)
+    p.add_argument("--max-fpr-adl", type=float, default=TrainConfig.max_fpr_adl,
+                   help="FPR-on-ADL cap; threshold maximises recall under it")
     p.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
     args = p.parse_args(argv)
 
@@ -409,6 +431,7 @@ def main(argv: list[str] | None = None) -> None:
         lr=args.lr,
         seed=args.seed,
         pos_weight_scale=args.pos_weight_scale,
+        max_fpr_adl=args.max_fpr_adl,
         synthetic=args.synthetic,
     )
     run_training(cfg, dataset_root=args.dataset_root)

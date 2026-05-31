@@ -117,6 +117,37 @@ def pick_threshold_for_recall(
     return max(swept, key=lambda m: (m.recall, -m.fpr_adl))
 
 
+def pick_threshold_for_fpr(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    is_adl: np.ndarray,
+    max_fpr_adl: float = 0.05,
+) -> EdgeMetrics:
+    """Choose the operating threshold with the HIGHEST recall whose ADL FPR ≤ cap.
+
+    This is the inverse of `pick_threshold_for_recall`, and the right objective
+    for a daily-wear wearable: a hard comfort budget (false alarms on ADL) is
+    non-negotiable, so we pin FPR-on-ADL ≤ `max_fpr_adl` and then buy as much
+    recall as that budget allows. Compare to the old "hit 95% recall at any FPR
+    cost" strategy, which produced unusably high (and unstable) FPR.
+
+    Sweeps thresholds over the observed probability values. If no threshold meets
+    the FPR cap (rare — a high enough threshold drives ADL FPR → 0), falls back
+    to the lowest-FPR point.
+    """
+    y_prob = np.asarray(y_prob)
+    candidates = np.unique(np.concatenate([[0.0], y_prob, [1.0]]))
+    swept = [compute_metrics(y_true, y_prob, is_adl, t) for t in candidates]
+
+    feasible = [m for m in swept if m.fpr_adl <= max_fpr_adl]
+    if feasible:
+        # Highest recall under the cap; tie-break on lower FPR, then a higher
+        # (more conservative) threshold.
+        return max(feasible, key=lambda m: (m.recall, -m.fpr_adl, m.threshold))
+    # Cap unreachable on this set → take the strictest (lowest-FPR) point.
+    return min(swept, key=lambda m: (m.fpr_adl, -m.recall))
+
+
 @dataclass
 class LeadTimeStats:
     """Lead-time summary for correctly-predicted pre-impact windows (in ms)."""
