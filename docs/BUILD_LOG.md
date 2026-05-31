@@ -478,4 +478,55 @@ All runs in MLflow `fall-guardian/edge`. Phase 10's 5-offset ×1.0 remains the c
 
 ---
 
+## Phase 12 — Edge FPR fix: capacity + FPR-constrained threshold (2026-06-01)
+
+### The problem (carried from Phase 11)
+
+Best edge model so far: 95.2% recall but **18.7% FPR-on-ADL** (target ≤5%), and Phase 11 showed FPR swings wildly (19→43%) on small changes. Diagnosis: the ~10 k-param v1 net lacked the capacity to separate fall run-up from vigorous ADL across subjects, and the threshold strategy ("hit 95% recall at any FPR cost") actively chased the trigger-happy operating point. Two coordinated fixes this phase.
+
+### Fix 1 — bigger, regularised model (uses our INT8 budget headroom)
+
+We were sitting on ~70 KB of unused INT8 budget. v2 of `convlstm_tiny.py`:
+
+- **Deeper conv front-end**: a third Conv1d block, channels widened 16/32 → **24/48/64**.
+- **Wider recurrent head**: LSTM hidden 32 → **64**.
+- **Heavy regularisation** so the extra capacity doesn't overfit the 14-subject fall pool: **Dropout 0.3** after every conv block, **0.4** on the LSTM output, and **AdamW** with **weight_decay 5e-4** (decoupled L2, replacing Adam).
+- Result: **47,145 params ≈ 46 KB INT8** — still well under the 80 KB budget.
+
+### Fix 2 — FPR-constrained operating point (`pick_threshold_for_fpr`)
+
+Refactored threshold selection. The comfort budget is a *hard* constraint on a daily-wear device, so instead of targeting recall and hoping FPR is acceptable, we now **pin FPR-on-ADL ≤ cap (default 5%) and pick the highest-recall threshold under it**. The same objective also drives **checkpoint selection** during training (best epoch = best val recall *at FPR ≤ cap*), so we stop rewarding the trigger-happy behaviour we're trying to kill. `pick_threshold_for_recall` is kept for reference; `pick_threshold_for_fpr` is the new default. `pos_weight_scale` dropped back to 1.0 — the threshold, not loss weighting, now owns the comfort budget.
+
+### Result (real WEDA-FALL, seed 42, 50 epochs)
+
+| Metric | v1 best (Phase 10) | v2 (this phase) | Target |
+|---|---|---|---|
+| FPR-on-ADL | 0.187 | **0.060** (val 0.048) | ≤0.05 |
+| Precision | 0.471 | **0.669** | — |
+| F1 | 0.590 | **0.744** | — |
+| Recall | 0.952 | 0.839 | ≥0.95 |
+| Lead (mean) | 256 ms | 250 ms | ≥300 ms |
+| Size (INT8) | ~10 KB | ~46 KB | ≤80 KB ✅ |
+
+The model is now **genuinely better separated** — precision 47→67%, F1 0.59→0.74 — and FPR fell from 18.7% to 6.0%. That's the headline win: the over-firing is largely gone.
+
+### Tradeoffs + honest read
+
+- **Recall fell to 83.9%** (from 95.2%). This is the *intended* tradeoff: at a 5% comfort budget the FPR-constrained point buys ~84% recall. The old 95% recall was only purchasable at 18.7% FPR — not a free lunch we gave up, but an unusable point we stopped pretending was good.
+- **val 4.8% vs test 6.0% FPR** — the operating point chosen on val doesn't transfer perfectly to held-out test subjects. Same cross-subject variance Phase 11 flagged; a single split can't pin the threshold robustly. The FPR cap is *met on val* and just missed on test.
+- **Lead 250 ms** — roughly unchanged; the offset family controls this, untouched here.
+
+### Decision + next steps
+
+Shipped v2 — it's a clear improvement (FPR 18.7→6.0%, precision/F1 up sharply, still tiny). Not all three targets are simultaneously met yet; the remaining work is about *robustness and the recall ceiling at low FPR*:
+
+1. **Subject-stratified k-fold CV** (not a single split) to choose the threshold so val→test transfers — should close the 4.8%→6.0% gap and give honest error bars. This is the highest-value next step.
+2. **Probability calibration** (Platt/isotonic, already planned) so the threshold means the same thing across subjects.
+3. To lift recall *without* breaking the FPR budget: richer input (add the orientation channels we already load), light data augmentation on falls, or a small bump in capacity — we still have ~34 KB of INT8 budget.
+4. The cloud detection model is the architectural second gate for any edge FPs that slip through, so 6% edge FPR is far more defensible than 18.7% was.
+
+All runs in MLflow `fall-guardian/edge`.
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._
