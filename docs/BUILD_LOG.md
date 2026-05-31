@@ -229,4 +229,87 @@ The full commit sequence for this migration: see `git log` after the migration c
 
 ---
 
+## Phase 8 — Compliance documentation + verification CLI (2026-05-31)
+
+Three compliance-focused documents and the first piece of project tooling. The atomic commits in this phase carry the project from "trustworthy code" to "trustworthy code documented for the kind of audience that matters" — recruiters, collaborators, future-me, and (eventually) actual deployment auditors.
+
+### `docs/MODEL_CARD.md` — model card
+
+Followed the Mitchell-et-al. (2019) model-card structure, adapted for a two-model system. Single card covers both the Edge Predictor (ConvLSTM-tiny INT8, pre-impact prediction on ESP32-S3) and the Cloud Detector (Transformer encoder, post-impact confirmation + severity on Fly.io).
+
+Sections covered:
+
+1. Model details — architecture diagrams, frameworks + versions, status (not-yet-trained, designed)
+2. Intended use — primary use, out-of-scope uses, user roles
+3. Performance — target metrics from the project plan (marked clearly as targets, not measurements) + a "Measured metrics" table waiting to be populated at training time + slice-level performance taxonomy (age, gender, fall type, ADL type, dataset of origin)
+4. Training data — WEDA-FALL primary, SmartFall secondary, Indian-ADL supplement, UP-Fall held-out
+5. Evaluation data — subject-stratified k-fold CV, held-out test subjects, cross-dataset evaluation
+6. Ethical considerations — health-data sensitivity, alert fatigue, bias risks (subject coverage, gender, Indian context, wrist asymmetry), user-facing failure-mode disclosure
+7. Caveats — not yet trained, wrist-only, sampling-rate dependency, Indian-ADL coverage limits, threshold defaults
+8. Versioning — semver, MLflow registry, git-hash traceability, /health endpoint exposure
+9. Contact + citation
+
+The card is explicitly versioned as v0 and will be updated when Week B / Week C / Week E training runs land real metrics. Empty rows in §3.2 link to MLflow run IDs once populated.
+
+### `docs/PRIVACY.md` — privacy policy under DPDP Act 2023
+
+Drafted to satisfy India's Digital Personal Data Protection Act 2023 framework — the binding regulation given Fall Guardian's primary user base is elderly Indians. Structure:
+
+1. DPDP role mapping — Data Principal (user), Data Fiduciary (operator), Data Processor (Fly.io / Supabase / Firebase / Better Stack / Sentry), Significant Data Fiduciary (threshold not crossed)
+2. Data categories collected — sensor (edge-only by default; triggered windows uploaded only when the edge model fires), account, event metadata; explicit list of data NOT collected (location in steady state, audio/video, third-party data)
+3. Lawful basis — specific informed consent per category, with the consequences of refusal disclosed
+4. Notice (DPDP §5) — bilingual English + Hindi
+5. Data Principal rights (§11–14) — access, correction, erasure, grievance redressal, nomination of digital nominee, consent withdrawal — each with an SLA
+6. Data minimisation — edge-first inference, per-purpose API scoping, Postgres row-level security, no third-party analytics SDKs
+7. Storage + security — provider-region mapping (prefer AWS Mumbai), incident-response 72-hour notification to DPB India
+8. Cross-border transfer (DPDP §16) — disclosure of US-region provider use (Firebase FCM) with no event-payload data, and India-region preference for Postgres
+9. Grievance Officer (§8(9)) — appointed, contact published, SLA committed
+10. Children's data (§9) — out of scope; parental-consent path documented
+11. Automated decision-making + AI transparency — links to MODEL_CARD; only-automated-action is alerting (consented to)
+12. Third-party services + their data exposure — full table
+13. Cookies — first-party only; no tracking
+14. Change-management — 14-day notice for material changes
+15. Contact + DPB-India escalation path
+
+The doc is written to be readable by a non-lawyer first (clear sections, plain English) and satisfy DPDP requirements second.
+
+### `docs/DATA_LICENSES.md` — dataset licence ledger
+
+Per-dataset rows for everything currently in use and everything considered + rejected:
+
+- **WEDA-FALL** — open via GitHub; specific licence still to be confirmed against upstream LICENSE file before v3.0.0 release tag (action item logged in-doc)
+- **SmartFall** — academic-research licence pending email to Anne Ngu's lab (action item logged for before Week C)
+- **UP-Fall** — open academic via HAR-UP site; specific terms pending download (action item logged)
+- **Indian-ADL** — original-content; published CC BY 4.0 with attribution string + subject-consent procedure
+- Rejected datasets (KFall, SisFall, UMA-Fall, FARSEEING, MobiAct) listed for transparency
+
+Plus a release-time compliance checklist + maintenance protocol.
+
+### `ml/src/fall_guardian_ml/datasets/cli.py` — `fg-data verify`
+
+First executable tool in the project. Exposed via the `fg-data` console script declared in `ml/pyproject.toml`. Single subcommand for now: `verify`.
+
+`verify` checks:
+
+1. WEDA-FALL root folder exists at the expected (or `--weda-root`-overridden) path
+2. The chosen sample-rate sub-folder exists (default 50 Hz)
+3. `fall_timestamps.csv` is present + parseable + has the required columns
+4. Each movement code (D01–D11 + F01–F08) has a folder, and the per-folder recording count is reported in a per-code table with young/elder subject breakdown
+5. Sensor-file completeness is spot-checked on a sample of recordings (accel, gyro, orientation, vertical_accel)
+6. Subject coverage — confirms expected young (14) + elder (11) subject IDs appear across the dataset
+
+Output uses `rich` Console + Table for legibility. Exits non-zero with a summary of issues if anything is amiss; otherwise prints a "Verification PASSED" banner. This becomes the first line of defence against "training failed in epoch 1 because a path was wrong" — an embarrassing class of bug we eliminate up front.
+
+Implementation notes:
+
+- Default `--weda-root` is derived from the CLI file's location (`Path(__file__).parents[3] / "data" / "raw" / "WEDA-FALL-main"`) so the command Just Works when run from the `ml/` directory of the repo.
+- Uses the same `discover_recordings` + `load_fall_timestamps` helpers as the loader (`weda_fall.py`) so a verify success is direct evidence the loader will succeed too.
+- `--rate` flag lets you check the lower-resolution sub-folders (5/10/25/40 Hz) too — useful when experimenting with downsampled training.
+
+### Outcome
+
+After this phase, the repo contains: working ML pipeline code (Phase 6) + comprehensive design + audit + decision documentation (Phase 7) + compliance documentation suitable for a real product launch (Phase 8) + the first piece of executable tooling that verifies the dataset is in the right shape before any training cost is sunk. Five atomic commits + a push. Project moves into Phase 9 (EDA notebook + MLflow scaffolding + baseline training).
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._
