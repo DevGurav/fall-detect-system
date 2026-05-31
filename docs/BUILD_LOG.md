@@ -386,4 +386,51 @@ The Week A data foundation is now: (1) coded, (2) tested at the math level (23 u
 
 ---
 
+## Phase 10 — Edge ML (Week B): ConvLSTM-tiny baseline (2026-06-01)
+
+Built and trained the first edge **pre-impact prediction** model on real WEDA-FALL. New modules under `ml/src/fall_guardian_ml/`, a `fg-train` CLI, and everything MLflow-tracked under the experiment `fall-guardian/edge`.
+
+### Environment
+
+`uv`-managed venv on the existing interpreter (torch 2.12 CPU, mlflow 3.12, onnxruntime 1.26). The `.tflite` export stack (`ai-edge-torch`, `ai-edge-litert`) is a Linux-only optional group — see the export note below.
+
+### What got written
+
+- **`models/convlstm_tiny.py`** — 1D-CNN front-end (Conv1d 6→16→32, stride 2 each) → single-layer LSTM(32) → Linear(32→1) binary logit. Static `(B,125,6)` input for a clean fixed-shape export. **10,641 params (~10.4 KB at INT8)** — well under the 80 KB budget. CNN→LSTM (not a true ConvLSTM2D): the input is a 1D 6-channel series, so conv-then-recurrent captures the same locality at a fraction of the ops, which is what "tiny" must mean for TFLite Micro.
+- **`datasets/edge_dataset.py`** — assembles binary pre-impact windows from the Week A primitives (`discover_recordings` → `load_recording` → `find_impact` → `assign_phase_labels` → `slide_for_prediction`). Each window carries `subject`, `is_adl`, and `t_to_impact_s` so the split stays subject-stratified, FPR is measured on ADL windows specifically, and lead-time has its data. Plus per-channel standardization (fit on TRAIN only) and a synthetic generator for plumbing smoke tests.
+- **`eval/metrics.py`** — pure-NumPy recall / precision / F1 / **FPR-on-ADL** / specificity + confusion counts, a recall-targeted threshold sweep (hit 95% recall at the lowest ADL FPR rather than blindly using 0.5), and lead-time stats + histogram.
+- **`training/train_edge.py`** + **`training/cli.py`** — orchestration: assemble → **subject-stratified split** (held-out test subjects never trained on) → standardize → weighted-BCE training with best-val-recall checkpointing → threshold pick on val → honest eval on held-out test → MLflow params/metrics/artifacts. `fg-train edge | quantize | benchmark | export-onnx | edge-pipeline`.
+- **`eval/quantize.py`**, **`eval/benchmark.py`**, **`eval/onnx_export.py`** — INT8 export + size/latency.
+
+### The `.tflite` export is Linux-only (documented finding)
+
+The whole Google TFLite-Micro toolchain (`ai-edge-torch`, `ai-edge-litert`, `onnx2tf`) publishes wheels for **manylinux + macOS arm64 only** — no native-Windows wheel, and `onnx2tf` hard-imports `ai_edge_litert` at module load. So the deployable `.tflite` export must run in **CI / Linux**, which fits the blueprint's GitHub Actions plan (a Linux workflow will compile the `.tflite`). On Windows, `fg-train export-onnx` runs the part that *does* work: ONNX export (clean, LSTM included) + a real INT8 footprint cross-check via ONNX Runtime — **19.9 KB, 0.18 ms** on CPU, confirming we're comfortably inside the 80 KB budget. The `[tflite]` deps are marked `platform_system == 'Linux'` so `uv sync` on Windows still resolves.
+
+### Finding 1 — the 60 ms geometry lock (single aligned window)
+
+The first windowing design emitted exactly ONE pre-impact-aligned window per fall, pinned to end at `t_impact − guard` (guard = 50 ms). Result on real WEDA-FALL: recall 85.3%, FPR-on-ADL 2.4% (good), but the **lead-time histogram was a degenerate spike — every caught positive at exactly 60 ms**. That's geometry, not learning: the model was only ever shown a 60-ms-before-impact window, so it could only fire 60 ms out, structurally unable to reach the ≥300 ms target. A 60 ms "predictor" isn't meaningfully pre-impact.
+
+### Fix — staggered family of aligned windows + pos_weight
+
+Rewrote `slide_for_prediction` to emit a **staggered family** of aligned windows whose tails step back across the run-up (default t−50/−150/−250/−350/−450 ms), each force-labeled PRE_IMPACT. This turns lead time into a real distribution and teaches the model to recognise the *early* run-up. Side effect: positives jump 4.2% → 16.8%, so the auto `pos_weight` falls to ~5. Added a `pos_weight_scale` knob (BCE recall bias) and swept it:
+
+| Config | Recall | FPR-ADL | Lead (mean) |
+|---|---|---|---|
+| Single aligned window | 0.853 | **0.024** | 60 ms (spike) |
+| Staggered + pos_weight ×1.5 | 0.903 | 0.470 | 245 ms |
+| Staggered + pos_weight ×1.0 | **0.952** | 0.187 | 256 ms |
+
+The staggered family **unblocked the geometry**: lead went 60 ms → ~256 ms as a genuine distribution, and at ×1.0 **recall now passes (95.2%)**. ×1.5 was counter-productive — the family already rebalanced classes, so the extra bias just over-fired (FPR 47%). Kept ×1.0.
+
+### Where Week B stands
+
+- ✅ Recall 95.2% (target ≥95%)
+- ✅ Model size ~10–20 KB INT8 (target ≤80 KB)
+- ⚠ Lead time 256 ms — close, ~44 ms short of 300 ms
+- ❌ **FPR-on-ADL 18.7%** (target ≤5%) — now the main bottleneck; the staggered positives made the model trigger-happy on everyday motion
+
+Next levers for FPR/lead (Week B cont.): the earliest aligned windows (350/450 ms) carry the least pre-impact signal and may be the noisiest positives — try trimming or down-weighting them; add capacity/regularisation; revisit the recall-vs-FPR operating point (the cloud detection model is the second gate that's *meant* to suppress edge false positives, so some edge FPR is by design — but 18.7% is too high to lean on that alone). All three runs are in MLflow `fall-guardian/edge`.
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._
