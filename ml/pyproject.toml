@@ -36,8 +36,24 @@ dependencies = [
 
 [project.optional-dependencies]
 tflite = [
-    # for Week B+ (quantization + .tflite export)
-    "tensorflow>=2.18",
+    # Week B+ — INT8 PTQ + .tflite export. ai-edge-torch converts PyTorch
+    # directly to LiteRT/TFLite and pulls in TensorFlow as a transitive dep.
+    # NOTE: this stack ships wheels for Linux + macOS ONLY (no native Windows),
+    # and only for Python 3.9–3.12. The .tflite export therefore runs in CI /
+    # Linux, not on a Windows dev box — see eval/quantize.py. On Windows use
+    # `fg-train export-onnx` for the ONNX + INT8 cross-check (onnxruntime).
+    # Linux-only markers: these wheels don't exist for Windows, so without the
+    # marker a universal `uv lock` / `uv sync` on a Windows dev box fails to
+    # resolve. The .tflite export runs in the Linux CI job, which is fine.
+    "ai-edge-torch>=0.3 ; platform_system == 'Linux'",
+    "tensorflow>=2.18 ; platform_system == 'Linux'",
+    "ai-edge-litert>=1.0 ; platform_system == 'Linux'",
+]
+# Windows-runnable edge export (ONNX intermediate + INT8 cross-check).
+onnx = [
+    "onnx>=1.16",
+    "onnxruntime>=1.18",
+    "onnxscript>=0.1",
 ]
 dev = [
     "pytest>=8.3",

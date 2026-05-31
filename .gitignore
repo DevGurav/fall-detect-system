@@ -37,6 +37,8 @@ ml/data/external/**
 # ─── ML artifacts ────────────────────────────────────────────────
 ml/mlruns/
 ml/mlartifacts/
+ml/mlflow.db
+ml/artifacts/
 ml/models/*.pt
 ml/models/*.pth
 ml/models/*.onnx
