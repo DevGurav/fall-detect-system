@@ -36,6 +36,13 @@ app = typer.Typer(
 console = Console()
 
 
+@app.callback()
+def _main() -> None:
+    """Fall Guardian dataset utilities. Use a subcommand (e.g. `fg-data verify`)."""
+    # No-op callback. Its presence forces Typer to expose subcommands rather
+    # than collapsing a single-command app into top-level args.
+
+
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
 def _default_data_root() -> Path:
@@ -51,15 +58,15 @@ def _default_data_root() -> Path:
 
 
 def _ok(msg: str) -> None:
-    console.print(f"[green]✓[/green] {msg}")
+    console.print(f"[green][OK][/green] {msg}")
 
 
 def _fail(msg: str) -> None:
-    console.print(f"[red]✗[/red] {msg}")
+    console.print(f"[red][FAIL][/red] {msg}")
 
 
 def _warn(msg: str) -> None:
-    console.print(f"[yellow]![/yellow] {msg}")
+    console.print(f"[yellow][WARN][/yellow] {msg}")
 
 
 # ─── verify ─────────────────────────────────────────────────────────────────
@@ -87,7 +94,7 @@ def verify(
     if weda_root is None:
         weda_root = _default_data_root() / "WEDA-FALL-main"
 
-    console.rule("[bold]Fall Guardian — WEDA-FALL verification")
+    console.rule("[bold]Fall Guardian -- WEDA-FALL verification")
     console.print(f"[bold]Looking in:[/bold] {weda_root}")
     console.print()
 
@@ -181,7 +188,7 @@ def verify(
             marks = []
             for sensor in ("accel", "gyro", "orientation", "vertical_accel"):
                 exists = (base / f"{stem}_{sensor}.csv").exists()
-                marks.append("[green]✓[/green]" if exists else "[red]✗[/red]")
+                marks.append("[green]OK[/green]" if exists else "[red]MISSING[/red]")
                 if not exists:
                     issues.append(f"{rec.label_key}: missing {sensor}.csv")
             sample_table.add_row(rec.label_key, *marks)
