@@ -265,9 +265,13 @@ def discover_recordings(
         if not movement_dir.exists():
             continue
         # Each recording has 4 sensor files; we discover by looking at the accel files.
+        # NB: the glob "*_accel.csv" also matches "*_vertical_accel.csv" — exclude
+        # those by checking the captured sensor group is exactly "accel".
         for fpath in movement_dir.glob("U*_R*_accel.csv"):
             m = _FNAME_RE.match(fpath.name)
             if not m:
+                continue
+            if m.group("sensor") != "accel":
                 continue
             user_id = int(m["user"])
             trial = int(m["trial"])
