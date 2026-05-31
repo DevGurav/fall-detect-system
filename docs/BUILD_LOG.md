@@ -433,4 +433,49 @@ Next levers for FPR/lead (Week B cont.): the earliest aligned windows (350/450 m
 
 ---
 
+## Phase 11 — Edge FPR investigation: the offset-trim experiment (2026-06-01)
+
+### The problem
+
+End of Phase 10 left one target badly missed: **FPR-on-ADL = 18.7%** (target ≤5%) at the recall-95.2% operating point. Recall was met and the lead-time lock was broken, but a model that flags ~1 in 5 everyday-activity windows as "fall imminent" is unusable on its own — alert fatigue is the thing that kills these products in the field.
+
+### The hypothesis
+
+The staggered window family (Phase 10) labels windows ending 50–450 ms before impact as PRE_IMPACT. The earliest one (−450 ms) holds only ~50 ms of actual pre-impact signal at its tail (PRE_IMPACT starts at −500 ms); the other ~2.45 s is ordinary pre-fall background. Hypothesis: that window looks almost identical to a quick, vigorous everyday movement, so labeling it a strong positive teaches the model to fire on normal ADL → inflated FPR. Proposed fix: trim the family to (50, 150, 250, 350 ms), keeping only the signal-bearing positives.
+
+### What was implemented
+
+- `DEFAULT_PRE_IMPACT_OFFSETS_MS` trimmed to `(50, 150, 250, 350)`.
+- Retrained on real WEDA-FALL (seed 42, 40 epochs), same subject-stratified split.
+- Because trimming drops positives (16.8% → 14.0%), the auto `pos_weight` rose (4.96 → 6.18), which *itself* biases toward more firing — a confound. So a second run held the effective weight constant (`--pos-weight-scale 0.8` → 4.94) to isolate the trim's own effect.
+
+### Result — the hypothesis was wrong
+
+| Config | Recall | FPR-ADL | Lead (mean) |
+|---|---|---|---|
+| 5 offsets, pos_weight ×1.0 (Phase 10 best) | **0.952** | **0.187** | **256 ms** |
+| 4 offsets, pos_weight ×1.0 | 0.903 | 0.404 | 198 ms |
+| 4 offsets, pos_weight ×0.8 (weight-matched) | 0.903 | 0.426 | 198 ms |
+
+Trimming made **every metric worse**, and the two trimmed runs were near-identical (TP=270, FN=29 both) — so this is a deterministic effect of the config, not run noise, and not the `pos_weight` confound (matching the weight didn't recover it). Removing the −450 ms windows didn't denoise the positives; it removed useful examples and the model generalised worse.
+
+### What it actually told us (the real diagnosis)
+
+The interesting signal is the **instability**: FPR swung 18.7% → 42.6% on a single windowing tweak. That points away from "noisy offset" and toward a deeper issue — the model lacks robust **cross-subject separation** between pre-impact run-up and vigorous ADL, so the recall-95% operating point sits on a knife-edge that small changes knock around. FPR is a **model-capacity / threshold-strategy** problem, not a windowing-offset one. Worth remembering WEDA-FALL falls come only from the 14 young subjects (elders did ADL only), so the fall-subject pool the split draws from is small, which amplifies this variance.
+
+### Decision + tradeoff
+
+Reverted to the 5-offset family — it's strictly better on all three metrics, so shipping the trim would have been committing a regression. Kept a code comment in `windowing.py` recording the negative result so it isn't blindly retried. Net code change this phase is just that documentation; the value is the ruled-out hypothesis.
+
+### Real levers for FPR (next, not yet done)
+
+1. **Model capacity / regularisation** — the current net is ~10 k params; FPR may simply need more representational power (wider LSTM / second conv block) plus dropout/weight-decay tuning to separate the classes robustly. Size budget (80 KB) has lots of headroom.
+2. **Threshold strategy** — "lowest threshold that hits 95% val recall" is variance-prone; consider optimising an FPR-constrained objective, or reporting a recall-at-fixed-FPR operating point, with proper subject-fold CV (not a single split) so the operating point is chosen robustly.
+3. **Lean on the architecture's second gate** — the cloud detection model is *designed* to confirm/suppress edge predictions, so some edge FPR is by design. But 18.7% is still too high to delegate entirely; target the edge down to single digits first.
+4. **Calibration** (Platt/isotonic, already in the plan) so the probability and threshold mean something stable across subjects.
+
+All runs in MLflow `fall-guardian/edge`. Phase 10's 5-offset ×1.0 remains the current best edge baseline.
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._

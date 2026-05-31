@@ -52,6 +52,13 @@ DEFAULT_STRIDE_SAMPLES = WINDOW_SAMPLES // 2              # 62 (~50% overlap)
 # Staggered pre-impact-aligned window tails (ms before the impact peak). They
 # span the pre-impact phase [guard=50 ms, lead=500 ms]; each yields one aligned
 # window whose lead time equals the offset. Tunable from training config.
+#
+# NB (Phase 11): we hypothesised the −450 ms tail was a noisy positive (only
+# ~50 ms of pre-impact signal in its tail) hurting FPR, and tried trimming to
+# (50,150,250,350). It made things WORSE on every metric (recall 95.2→90.3%,
+# FPR-on-ADL 18.7→40%, lead 256→198 ms), holding pos_weight constant. So the
+# full 5-offset family is kept; FPR is a model-separability problem, not a
+# windowing-offset one. See BUILD_LOG Phase 11 before retrying this.
 DEFAULT_PRE_IMPACT_OFFSETS_MS = (50, 150, 250, 350, 450)
 
 
