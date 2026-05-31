@@ -333,4 +333,57 @@ For reproducibility of this session:
 
 ---
 
+## Phase 9 — EDA notebook (2026-05-31)
+
+Ship the first analytical artifact of Week A: `ml/notebooks/01_eda.ipynb`. Validates the whole data-foundation pipeline end-to-end against the real WEDA-FALL recordings (not synthetic test inputs).
+
+### Structure (11 cells, 6 code + 5 markdown)
+
+1. **Intro markdown** — what the notebook validates, how to re-run it.
+2. **Setup code** — imports, `DATA_ROOT` path, load `fall_timestamps.csv`, discover all fall + ADL recordings, print counts.
+3. **Section 1 markdown** — visual verification rationale.
+4. **Visual verification code** — pick 6 random fall recordings (seeded RNG = 42), plot accelerometer magnitude `|a|` over time, overlay the dataset's labelled fall window (gray), our derived `t_impact` (black dashed line), and the PRE_IMPACT / IMPACT / POST_IMPACT phase regions (yellow / red / orange shading). The output is a 2x3 panel — if the black dashed line doesn't sit on the visible spike inside the gray window for any of the six, the impact derivation has a bug.
+5. **Section 2 markdown** — alignment check rationale.
+6. **Alignment compute code** — iterate every fall recording, compute `t_impact` + `lag = t_impact - start_time` + peak magnitude. Aggregate into a pandas DataFrame, partition valid vs invalid by the 20 m/s² (~2g) threshold, print descriptive statistics for both the lag and the peak magnitude.
+7. **Alignment plots code** — two-panel histogram: lag distribution and peak magnitude distribution, with mean/median/threshold annotations.
+8. **Per-fall-type box plot code** — separate lag-distribution box plots for each fall code (F01–F08). Reveals systematic differences in pre-fall phase length between fall types (e.g. sitting-down falls should have shorter lags than walking falls).
+9. **Section 3 markdown** — profiles rationale.
+10. **Profiles code** — `average_profile()` function: for each movement, compute the mean + std of `|a|(t)` across the first 20 recordings, centred on `t_impact` for falls (so all peaks line up at t=0) and on the recording midpoint for ADLs. Plot a 2x3 panel comparing three fall types (F01, F03, F08) against three ADL types (D01 walking, D04 sit-stand, D10 clapping). The fall traces should show a sharp spike around t=0; the ADL traces should be roughly flat bands around 1g.
+11. **Closing markdown** — what the notebook proves about Week A and what Week B picks up next.
+
+### Build mechanism
+
+Source of truth for the notebook structure: `ml/scripts/build_eda_notebook.py`. The script uses `nbformat` to programmatically construct cells and write the `.ipynb` JSON. Workflow:
+
+```bash
+cd ml
+uv run python scripts/build_eda_notebook.py
+uv run jupyter nbconvert --to notebook --execute --inplace \
+    notebooks/01_eda.ipynb --ExecutePreprocessor.timeout=600
+```
+
+The first command regenerates the notebook structure from the script. The second runs the notebook end-to-end and bakes the outputs (text + PNG figures) into the `.ipynb` so visitors reading the repo on GitHub see the executed analysis without needing to run anything.
+
+This split (builder script + executed notebook) handles two concerns cleanly:
+
+- **Reproducibility of structure**: anyone can regenerate the notebook from the script. Cell prose and code is version-controlled as normal Python, not JSON-escaped strings.
+- **Repo readability**: visitors see the rendered figures inline on GitHub. No "clone the repo, install deps, run the notebook" friction.
+
+### Bug fix during build
+
+The first build attempt failed with a Python syntax error because the cell content used `r"""..."""` outer string and an inner function had a `"""docstring"""` that terminated the outer string early. Fixed by switching inner docstrings to `'''...'''`. Python accepts both equivalently; the conflict was purely a quoting collision in the builder script. Logged here because the lesson generalises: when building notebooks programmatically with raw string blocks, use one quote style for the outer wrapper and the other for any embedded Python strings.
+
+### Execution result
+
+- 11 cells total, all execute without error.
+- 6 code cells, all populated with outputs. 4 of them embed PNG figures.
+- Notebook size after execution: ~590 KB (figures dominate). Committed to the repo so the executed analysis is the first thing a visitor sees when they open the notebook on GitHub.
+- Runtime: under 60 s end-to-end on the local machine. Bottleneck is the alignment-check cell (loads + interps + magnitudes + finds-impact for all 350 fall recordings).
+
+### Outcome
+
+The Week A data foundation is now: (1) coded, (2) tested at the math level (23 unit tests), (3) verified at the structural level (`fg-data verify`), (4) verified at the analytical level (this notebook on real data). Project moves into Week B: MLflow scaffolding and the first edge-model baseline.
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._
