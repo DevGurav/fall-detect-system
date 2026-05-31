@@ -5,30 +5,35 @@ Its job: looking at the most recent 2.5 s (125-sample) raw IMU window, decide
 whether a fall impact is *about to* happen (the PRE_IMPACT phase is sitting at
 the tail of the window). It must fit in ≤80 KB INT8 and run in <80 ms.
 
-Design — a compact 1D-CNN feature extractor feeding a small LSTM:
+Architecture (v2 — Phase 12 capacity + regularisation bump)
+-----------------------------------------------------------
+The v1 net (~10 k params) hit 95% recall but couldn't push FPR-on-ADL below
+~19%: it lacked the representational power to separate a fall run-up from
+vigorous everyday motion across subjects. We have ~70 KB of INT8 budget spare,
+so v2 spends it on a deeper conv front-end + a wider LSTM, with heavy dropout +
+weight decay so the extra capacity doesn't just overfit the small fall pool
+(falls come from only 14 young subjects in WEDA-FALL).
 
-    input  (B, 125, 6)            6 channels: ax, ay, az, wx, wy, wz @ 50 Hz
+    input  (B, 125, 6)                 6 channels: ax,ay,az,wx,wy,wz @ 50 Hz
       │
-      ├─ Conv1d(6→16, k=5, s=2) + BN + ReLU      local motion features, ↓ time → 61
-      ├─ Conv1d(16→32, k=3, s=2) + BN + ReLU     deeper features,        ↓ time → 30
+      ├─ Conv1d(6→24,  k5, s2) → BN → ReLU → Dropout   ↓ time → 63
+      ├─ Conv1d(24→48, k3, s2) → BN → ReLU → Dropout   ↓ time → 32
+      ├─ Conv1d(48→64, k3, s1) → BN → ReLU → Dropout      time   32   (new block)
       │
-      ├─ LSTM(32→32, 1 layer)                    temporal dynamics over the 30 steps
-      │      └─ take the last timestep's hidden state (32,)
+      ├─ LSTM(64→64, 1 layer)            temporal dynamics over the 32 steps
+      │      └─ last timestep's hidden state (64,)
       │
-      └─ Linear(32→1)                            single logit: P(pre-impact)
+      ├─ Dropout(head)
+      └─ Linear(64→1)                    single logit: P(pre-impact)
 
-Why CNN→LSTM rather than a true ConvLSTM2D (Shi et al. 2015): the input is a 1D
-time series of 6 channels, not a spatiotemporal grid, so a 1D conv front-end +
-LSTM captures the same "local-then-sequential" structure at a fraction of the
-parameter and op cost — which is what "tiny" has to mean to fit TFLite Micro.
+Still CNN→LSTM, not a true ConvLSTM2D: the input is a 1D 6-channel series, so a
+conv front-end + recurrent head captures the same local-then-sequential
+structure at a fraction of the ops. Default config is ~47 k params ≈ ~46 KB at
+INT8 — comfortably inside the 80 KB budget with room to spare.
 
-Parameter budget (default config): ~10.4 k params ≈ ~10 KB at INT8 — comfortably
-under the 80 KB target, leaving headroom to grow capacity if recall demands it.
-
-The edge model deliberately consumes the RAW 6-channel window (no engineered
-features) — feature extraction would not fit the flash/latency budget, and the
-conv front-end learns its own features anyway. The 43-dim engineered vector is
-the *cloud* model's input (see features/extraction.py).
+The edge model consumes the RAW 6-channel window (no engineered features) — the
+conv front-end learns its own, and feature extraction wouldn't fit the budget.
+The 43-dim engineered vector is the *cloud* model's input (features/extraction.py).
 """
 from __future__ import annotations
 
@@ -49,18 +54,26 @@ class ConvLSTMTinyConfig:
     n_channels: int = N_CHANNELS
     window_samples: int = WINDOW_SAMPLES
 
-    conv1_out: int = 16
+    conv1_out: int = 24
     conv1_kernel: int = 5
     conv1_stride: int = 2
 
-    conv2_out: int = 32
+    conv2_out: int = 48
     conv2_kernel: int = 3
     conv2_stride: int = 2
 
-    lstm_hidden: int = 32
+    conv3_out: int = 64
+    conv3_kernel: int = 3
+    conv3_stride: int = 1
+
+    lstm_hidden: int = 64
     lstm_layers: int = 1
 
-    dropout: float = 0.2
+    # Heavy regularisation — the extra capacity must not overfit the small,
+    # 14-subject fall pool. conv_dropout hits every conv block; head_dropout
+    # hits the LSTM output before the classifier.
+    conv_dropout: float = 0.3
+    head_dropout: float = 0.4
 
 
 class ConvLSTMTiny(nn.Module):
@@ -76,46 +89,39 @@ class ConvLSTMTiny(nn.Module):
         cfg = config or ConvLSTMTinyConfig()
         self.config = cfg
 
+        def conv_block(c_in: int, c_out: int, k: int, s: int) -> nn.Sequential:
+            return nn.Sequential(
+                nn.Conv1d(c_in, c_out, kernel_size=k, stride=s, padding=k // 2),
+                nn.BatchNorm1d(c_out),
+                nn.ReLU(inplace=True),
+                nn.Dropout(cfg.conv_dropout),
+            )
+
         self.conv = nn.Sequential(
-            nn.Conv1d(
-                cfg.n_channels,
-                cfg.conv1_out,
-                kernel_size=cfg.conv1_kernel,
-                stride=cfg.conv1_stride,
-                padding=cfg.conv1_kernel // 2,
-            ),
-            nn.BatchNorm1d(cfg.conv1_out),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(
-                cfg.conv1_out,
-                cfg.conv2_out,
-                kernel_size=cfg.conv2_kernel,
-                stride=cfg.conv2_stride,
-                padding=cfg.conv2_kernel // 2,
-            ),
-            nn.BatchNorm1d(cfg.conv2_out),
-            nn.ReLU(inplace=True),
+            conv_block(cfg.n_channels, cfg.conv1_out, cfg.conv1_kernel, cfg.conv1_stride),
+            conv_block(cfg.conv1_out, cfg.conv2_out, cfg.conv2_kernel, cfg.conv2_stride),
+            conv_block(cfg.conv2_out, cfg.conv3_out, cfg.conv3_kernel, cfg.conv3_stride),
         )
 
         self.lstm = nn.LSTM(
-            input_size=cfg.conv2_out,
+            input_size=cfg.conv3_out,
             hidden_size=cfg.lstm_hidden,
             num_layers=cfg.lstm_layers,
             batch_first=True,
         )
 
-        self.dropout = nn.Dropout(cfg.dropout)
+        self.head_dropout = nn.Dropout(cfg.head_dropout)
         self.head = nn.Linear(cfg.lstm_hidden, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x: (B, window_samples, n_channels) → logits: (B,)."""
         # Conv1d expects (B, C, T); the window arrives as (B, T, C).
         x = x.transpose(1, 2)               # (B, C, T)
-        x = self.conv(x)                    # (B, conv2_out, T')
-        x = x.transpose(1, 2)               # (B, T', conv2_out) for the LSTM
+        x = self.conv(x)                    # (B, conv3_out, T')
+        x = x.transpose(1, 2)               # (B, T', conv3_out) for the LSTM
         out, _ = self.lstm(x)               # (B, T', hidden)
         last = out[:, -1, :]                # last timestep's hidden state
-        last = self.dropout(last)
+        last = self.head_dropout(last)
         logit = self.head(last)             # (B, 1)
         return logit.squeeze(-1)            # (B,)
 
