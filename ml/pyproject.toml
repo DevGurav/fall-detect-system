@@ -1,0 +1,76 @@
+[project]
+name = "fall-guardian-ml"
+version = "0.1.0"
+description = "Fall Guardian — ML pipeline (datasets, features, models, training, evaluation)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Devendra Gurav", email = "prasad.gurav09@gmail.com" }
+]
+
+dependencies = [
+    # core numerics
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "scipy>=1.13",
+    # ML
+    "torch>=2.4",
+    "scikit-learn>=1.5",
+    # MLOps
+    "mlflow>=2.18",
+    # viz / EDA
+    "matplotlib>=3.9",
+    "seaborn>=0.13",
+    # notebooks
+    "jupyter>=1.1",
+    "ipykernel>=6.29",
+    # CLI
+    "typer>=0.12",
+    "rich>=13.7",
+    # utilities
+    "pydantic>=2.9",
+    "tqdm>=4.66",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+tflite = [
+    # for Week B+ (quantization + .tflite export)
+    "tensorflow>=2.18",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "ipywidgets>=8.1",
+]
+
+[project.scripts]
+fg-data = "fall_guardian_ml.datasets.cli:app"
+fg-train = "fall_guardian_ml.training.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fall_guardian_ml"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N"]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
