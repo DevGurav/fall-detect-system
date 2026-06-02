@@ -241,3 +241,27 @@ Hoping that domain adaptation across body positions saves a wrist model trained 
 - Sub-second dependency resolution on installs.
 - `uv run pytest` style commands for any tool that needs to be invoked through the environment.
 - The user has to install `uv` once (`pip install uv` or `pipx install uv`). One-time setup cost.
+
+---
+
+## ADR-011 — Local grace period + dedicated retraining ingestion endpoint
+
+**Status**: Accepted (2026-06-02)
+
+**Context.** The edge model is recall-first and fires often (ADR-002, ADR-004): ~20% of ADL windows trip it. The cloud Transformer suppresses most, but the *user* is the ground truth for their own false alarms. We add a **local grace period**: on an edge trigger the watch buzzes for ~10 s; if the user presses Cancel, that 2.5 s window was a false alarm. Those canceled windows are the most valuable per-user fine-tuning / threshold-tuning data we can collect — but they must never trigger an alert or run through the detector. The cloud now ingests two semantically different kinds of windows (a live emergency vs. a confirmed-false-alarm training sample) and has to route them differently.
+
+**Decision.** Expose the false-alarm upload on a **dedicated endpoint, `POST /v1/retraining`**, separate from `POST /v1/inference`. The retraining path skips the `CloudDetector` entirely and hands the window to a `RetrainingStore` that persists it labeled `CANCELED_FALSE_ALARM` (stubbed until MLOps persistence lands, mirroring the detector stub). Both endpoints validate against the same `WindowEnvelope` base model, so the locked 125-sample §8 contract (ADR-008) is enforced in exactly one place. A `payload_type` field (`emergency` | `retraining_data`) is added to the contract: it defaults to `emergency` on `/v1/inference` (so existing clients are unchanged) and is pinned to `retraining_data` on `/v1/retraining` (so a live trigger can't be diverted into the data-collection path).
+
+**Alternatives considered.**
+
+- *Single `/v1/inference` endpoint with a `payload_type` discriminator and a response union* — one ingestion URL, but overloads detection and data-collection on one route and forces `/v1/inference` to return two different response shapes. The dedicated endpoint keeps each route's response type singular and the concerns separated.
+- *Reuse `/v1/inference` and special-case it server-side without a new route* — same overloading problem, and an emergency that should alert would share a code path with one that must be silently stored — a risky place for a bug.
+- *Don't collect canceled windows at all* — throws away the highest-signal personalization data the product can get for free.
+
+**Relationship to ADR-008.** ADR-008 rejected "two endpoints" *for the same concern* (real vs. virtual device emitting the **same** payload) because it fragments validation. This is different: detection and data-collection are **distinct concerns** with distinct responses, and they explicitly **share** the `WindowEnvelope` validator — so validation is not fragmented. ADR-008's hardware-agnostic contract still holds; `payload_type` is an additive, backward-compatible extension of it.
+
+**Consequences.**
+
+- The watch posts canceled windows to `/v1/retraining`; they are stored, never scored — no chance of a false-alarm upload paging a caregiver.
+- `RetrainingStore` is the seam for future MLOps persistence (Postgres `retraining_samples`), gated on `FG_RETRAINING_DB_DSN`; swapping it in is a one-method change, zero API/schema impact — same philosophy as the `CloudDetector` stub.
+- The §8 contract gains an optional `payload_type`; existing ESP32 firmware and the virtual device keep working without sending it.

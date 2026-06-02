@@ -79,7 +79,8 @@ Technical reference for the current Fall Guardian v3 system. Reflects the locked
 
 **Endpoints** (all under `/v1/`):
 
-- `POST /v1/inference` — receives a 2.5 s window from a device, runs the cloud model, returns `{is_fall, confidence, severity, action}`. JWT-gated (device tokens). Pydantic schema strictly validated.
+- `POST /v1/inference` — receives a 2.5 s window from a device (`payload_type=emergency`), runs the cloud model, returns `{is_fall, confidence, severity, action}`. JWT-gated (device tokens). Pydantic schema strictly validated.
+- `POST /v1/retraining` — receives a 2.5 s window the user **canceled** during the local grace period (`payload_type=retraining_data`). Skips the cloud model entirely and stores it labeled `CANCELED_FALSE_ALARM` for later fine-tuning / per-user threshold tuning. Same window validation as `/v1/inference` (shared schema). See §3.2.
 - `POST /v1/devices/pair` — pair a device to a user account. Takes an 8-character Crockford base32 pairing code. Rate-limited (5 attempts → exponential backoff).
 - `GET /v1/devices` — list a user's paired devices with live status (online/offline, last-seen, battery).
 - `GET /v1/events` — fall-event timeline for a user, paginated.
@@ -178,6 +179,8 @@ If confirmed:
 ```
 
 End-to-end latency budget: edge inference <80 ms, network round-trip <500 ms, cloud inference <500 ms, notification fan-out <1 s. From impact peak to caregiver phone notification = **~2 s** when network is good.
+
+**Local grace period (false-alarm capture).** Before the watch streams anything, the haptic warning opens a ~10 s grace window. If the user presses **Cancel** (it wasn't a fall), the watch does *not* send an emergency: it silently uploads that same 2.5 s window to `POST /v1/retraining` (`payload_type=retraining_data`). The gateway **skips the cloud model** and stores the window labeled `CANCELED_FALSE_ALARM` for later fine-tuning / per-user threshold tuning — the user is ground truth for their own false alarms. This data-collection path is deliberately separate from the alerting path so a canceled trigger can never page a caregiver (see ADR-011). If the user does *not* cancel within the grace window, the flow above proceeds (`payload_type=emergency` → `/v1/inference`).
 
 ### 3.3 Acknowledgement
 
@@ -323,10 +326,11 @@ Cost expectation at hobby scale (≤100 users, ≤10 fall events/day): **$0–10
 
 ## 8. Hardware-agnostic ingestion contract
 
-The single JSON contract the cloud accepts at `/v1/inference`:
+The single JSON window contract the cloud accepts (same shape for both ingestion endpoints):
 
 ```jsonc
 {
+  "payload_type": "emergency",             // "emergency" | "retraining_data"; default "emergency"
   "device_id": "string",                   // device JWT scopes ownership
   "ts_start_unix_ms": 0,                   // window start, ms since epoch
   "sample_rate_hz": 50,
@@ -343,6 +347,15 @@ The single JSON contract the cloud accepts at `/v1/inference`:
 ```
 
 Both the real ESP32 firmware and the Python virtual device emit this exact shape. Cloud has no idea (and doesn't care) which one sent it. Lets development proceed against the virtual device until the hardware arrives, then swap with zero backend changes.
+
+**`payload_type` routes the window to one of two endpoints** (same validated envelope, different handling):
+
+| `payload_type` | Endpoint | Handling |
+|---|---|---|
+| `emergency` (default) | `POST /v1/inference` | Runs the cloud model → `{is_fall, confidence, severity, action}`. |
+| `retraining_data` | `POST /v1/retraining` | **Skips the model.** Stores the window labeled `CANCELED_FALSE_ALARM` → `{stored, label, sample_id, message}`. |
+
+The field defaults to `emergency`, so existing clients are unaffected. It is pinned to `retraining_data` on `/v1/retraining` (an `emergency` body there is a 422), so a live trigger can't be diverted into the data-collection path. The 125-sample validation is shared by both endpoints. See §3.2 and ADR-011.
 
 ---
 
