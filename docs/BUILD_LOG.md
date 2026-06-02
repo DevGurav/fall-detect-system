@@ -619,4 +619,31 @@ All runs in MLflow `fall-guardian/edge`.
 
 ---
 
+## Phase 15 — Week C kickoff: FastAPI backend skeleton (2026-06-01)
+
+First Week-C deliverable: the cloud gateway skeleton the detection model will live behind. Chose the backend before the Transformer because it pins the *interface* — the validated ingestion contract — that the model then serves, and it's end-to-end testable today via a stub detector.
+
+### What was built (`backend/`)
+
+- **`app/schemas.py`** — Pydantic v2 models = the locked §8 ingestion contract (`IMUSample`, `EdgePrediction`, `InferenceRequest`, `InferenceResponse`, `Severity`). Strict validation, incl. a field validator that rejects any window ≠ 125 samples. This is the deliberate fix for v1/v2's unvalidated `.get('x', 0)` inputs.
+- **`app/config.py`** — `pydantic-settings` config (env-overridable, `FG_*`/`.env`), carrying the locked window contract + model path/version + fall-confidence threshold.
+- **`app/services/detector.py`** — `CloudDetector`, the seam the trained model drops into. Runs in **stub mode** for now (peak acceleration-magnitude heuristic, ≥20 m/s² = fall, ≥30 = high) so the service is testable immediately; `model_path` set + `_load_model` implemented = real forward pass, with zero API/schema change. Responses always report `model_version` so a stub is never mistaken for the real model.
+- **`app/main.py`** — `create_app()` factory + lifespan that builds the detector once and stashes it on `app.state` (model load is expensive, share it).
+- **`app/routers/`** — `GET /health` (reports version + model_version + env) and `POST /v1/inference` (validated request → detector → typed response). Auth/rate-limit/persistence are explicitly deferred.
+- **`tests/test_api.py`** — 4 TestClient tests, all green: health ok; resting 1g window → not-fall/suppress; a 35 m/s² impact sample → fall/high/alert_caregiver; a 10-sample payload → 422.
+
+### Why a stub detector now
+
+The Transformer isn't trained yet, but blocking the backend on it would stall everything downstream (mobile, dashboard, the virtual-device loop). The stub lets the full request→detect→respond path — and later auth/persistence/notify — be built and tested against a real, if dumb, verdict. The heuristic is transparent and clearly versioned `stub-0.0`; swapping in the model is a one-function change.
+
+### Next in Week C
+
+1. **Train the cloud Transformer** on the 43-dim engineered feature vector (`features/extraction.py`), labelling IMPACT+POST_IMPACT as the positive class, subject-stratified like the edge — *this* is the precision gate that has to justify the edge's accepted ~20% FPR.
+2. Export it + load it in `detector.py` (retire the stub).
+3. Then: per-device JWT auth, rate-limiting, Postgres event persistence, Redis→SSE caregiver feed.
+
+Backend tests live in `backend/` (own venv); ML tests remain in `ml/`.
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._
