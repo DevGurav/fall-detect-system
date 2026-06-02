@@ -2,7 +2,7 @@
 
 Industry-grade wrist-worn fall prediction & detection system for elderly users (Indian context).
 
-> 🚧 **Status:** Active build — Week C (cloud model + backend). Edge baseline shipped (96.5% recall on held-out subjects). See [Build sequence](#build-sequence) below.
+> 🚧 **Status:** Active build — Week C. Edge baseline shipped (96.5% recall); cloud Transformer detector trained (97.0% recall, OOF) and **served in the gateway via ONNX** (heuristic stub retired). Edge→cloud cascade ADL false-positive rate **0.7%**. See [Build sequence](#build-sequence) below.
 
 ## The system in one diagram
 

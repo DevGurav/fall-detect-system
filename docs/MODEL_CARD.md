@@ -20,7 +20,7 @@ This card is a **living document**. Sections marked *"To be populated at trainin
 | Size budget | ≤100 KB INT8 | unconstrained (FP32) |
 | Latency budget | <80 ms on ESP32-S3 | <500 ms end-to-end |
 | Versioning | semver, MLflow-tracked | semver, MLflow-tracked |
-| Status (this card) | **Not trained yet** — architecture locked, training scheduled Week B | **Training pipeline built** — architecture locked, synthetic smoke passing; WEDA-FALL baseline metrics pending |
+| Status (this card) | **Not trained yet** — architecture locked, training scheduled Week B | **Trained + served** — WEDA-FALL, recall 0.970 (OOF); served as ONNX in the gateway (stub retired); cascade FPR 0.7%; continuous-wear /day sim pending |
 
 ### 1.2 Edge Predictor architecture (locked)
 
@@ -111,17 +111,35 @@ Real-time fall safety monitoring for **elderly users (Indian-context primary)** 
 
 ### 3.2 Measured metrics
 
-*To be populated at training time. Each populated row links to the MLflow run that produced it.*
+Edge: Week-B run (MLflow `fall-guardian/edge`). Cloud: Week-C, MLflow
+`fall-guardian/cloud` — 5-fold subject CV (out-of-fold over all subjects) plus a
+single held-out split.
 
-| Metric | Edge Predictor | Cloud Detector | MLflow run |
-|---|---|---|---|
-| Recall (overall) | TBD | TBD | TBD |
-| Precision (overall) | TBD | TBD | TBD |
-| F1 (overall) | TBD | TBD | TBD |
-| FPR on ADL | TBD | TBD | TBD |
-| Mean lead time | TBD | n/a | TBD |
-| ROC AUC | TBD | TBD | TBD |
-| Confusion matrix | TBD (link to plot) | TBD (link to plot) | TBD |
+| Metric | Edge Predictor | Cloud Detector |
+|---|---|---|
+| Recall (overall) | 0.965 | 0.970 (5-fold OOF) · 0.987 (single-split) |
+| Precision (overall) | 0.455 | 0.545 (OOF) |
+| F1 (overall) | 0.619 | 0.698 (OOF) |
+| FPR on ADL (standalone) | 0.203 (accepted; cloud-gated) | 0.072 (OOF) · 0.050 (single-split) |
+| Mean lead time | 256 ms | n/a (post-impact) |
+| Severity MAE | n/a | ~1.1–1.7 m/s² |
+| Artifact size | ~46 KB INT8 | ~1 MB ONNX (FP32) |
+
+**Cascade — the product metric.** The cloud's standalone ADL FPR (5–7%) *fails* the
+≤2% gate in isolation, but that's a false bottleneck: the cloud only scores windows
+the edge forwards, and the two models make largely **independent** false positives.
+Measured on held-out WEDA-FALL ADL, the **edge→cloud joint FPR is 0.7%** (29× below
+edge-alone 0.203). The impact-like ADLs the cloud trips on (clapping 15%, hit-table
+21%, jump 18% standalone) collapse to ~0% in the cascade; the only residuals are
+stumble (a genuine near-fall) and clapping. The cloud meets recall ≥0.97 and
+delivers the precision the two-stage design depends on.
+
+**Still owed (queued):** a rigorous **continuous-wear simulation** (realistic
+activity mix + alarm burst-debouncing) to turn the 0.7% per-window cascade FPR into
+a defensible **≤0.5 alarms/day** number. The per-window figure is on an
+adversarial, impact-heavy ADL set (worst case) — encouraging, but not a literal
+/day pass yet. The cloud serves in the gateway as an ONNX artifact (`backend/app/
+model/`, retiring the heuristic stub).
 
 ### 3.3 Slice-level performance
 
