@@ -71,6 +71,7 @@ class CloudBundle:
     groups: np.ndarray        # (N,) int64 — subject (user_id) per window
     is_adl: np.ndarray        # (N,) bool — window came from an ADL recording
     severity: np.ndarray      # (N,) float32 — peak |a| (m/s²), severity-head target
+    phase: np.ndarray         # (N,) int64 — the window's mode Phase (BACKGROUND/PRE_IMPACT/IMPACT/POST_IMPACT), for analysis
     meta: dict = field(default_factory=dict)
 
     def __len__(self) -> int:
@@ -131,6 +132,7 @@ def build_cloud_bundle(
     g_list: list[int] = []
     adl_list: list[bool] = []
     sev_list: list[float] = []
+    p_list: list[int] = []
 
     n_falls_used = 0
     n_falls_skipped = 0
@@ -164,6 +166,7 @@ def build_cloud_bundle(
             g_list.append(rec_id.user_id)
             adl_list.append(not rec_id.is_fall)
             sev_list.append(_peak_accel_magnitude(w.data))
+            p_list.append(int(w.label))
 
     if not X_list:
         raise RuntimeError(
@@ -184,6 +187,7 @@ def build_cloud_bundle(
         groups=np.asarray(g_list, dtype=np.int64),
         is_adl=np.asarray(adl_list, dtype=bool),
         severity=np.asarray(sev_list, dtype=np.float32),
+        phase=np.asarray(p_list, dtype=np.int64),
         meta={
             "source": "WEDA-FALL",
             "sample_rate": sample_rate,
@@ -220,15 +224,16 @@ def make_synthetic_cloud_bundle(
     T, C = WINDOW_SAMPLES, N_CHANNELS
     t = np.linspace(0.0, 2.5, T, dtype=np.float32)
 
-    X_list, f_list, y_list, g_list, adl_list, sev_list = [], [], [], [], [], []
+    X_list, f_list, y_list, g_list, adl_list, sev_list, p_list = [], [], [], [], [], [], []
 
-    def _emit(window: np.ndarray, label: int, subject: int, is_adl: bool) -> None:
+    def _emit(window: np.ndarray, label: int, subject: int, is_adl: bool, phase: int) -> None:
         X_list.append(window)
         f_list.append(extract_features(window, sample_rate=50))
         y_list.append(label)
         g_list.append(subject)
         adl_list.append(is_adl)
         sev_list.append(_peak_accel_magnitude(window))
+        p_list.append(phase)
 
     for subject in range(1, n_subjects + 1):
         for _ in range(adls_per_subject):
@@ -240,7 +245,7 @@ def make_synthetic_cloud_bundle(
                 amp = rng.uniform(0.5, 2.0)
                 w[:, c] += amp * np.sin(2 * np.pi * freq * t + phase + c)
             w += rng.normal(0, 0.3, size=(T, C)).astype(np.float32)
-            _emit(w, label=0, subject=subject, is_adl=True)
+            _emit(w, label=0, subject=subject, is_adl=True, phase=Phase.BACKGROUND.value)
 
         for _ in range(falls_per_subject):
             w = np.zeros((T, C), dtype=np.float32)
@@ -254,7 +259,7 @@ def make_synthetic_cloud_bundle(
                 w[impact_idx, c] += peak * rng.choice([-1.0, 1.0])
                 decay = np.exp(-np.arange(T - impact_idx) / 5.0).astype(np.float32)
                 w[impact_idx:, c] += 0.4 * peak * decay * rng.uniform(0.5, 1.0)
-            _emit(w, label=1, subject=subject, is_adl=False)
+            _emit(w, label=1, subject=subject, is_adl=False, phase=Phase.IMPACT.value)
 
     X = np.stack(X_list).astype(np.float32)
     feats = np.stack(f_list).astype(np.float32)
@@ -266,6 +271,7 @@ def make_synthetic_cloud_bundle(
         groups=np.asarray(g_list, dtype=np.int64)[perm],
         is_adl=np.asarray(adl_list, dtype=bool)[perm],
         severity=np.asarray(sev_list, dtype=np.float32)[perm],
+        phase=np.asarray(p_list, dtype=np.int64)[perm],
         meta={"source": "SYNTHETIC", "seed": seed, "n_subjects": n_subjects,
               "n_channels": N_CHANNELS, "n_features": N_FEATURES,
               "positive_class": "IMPACT+POST_IMPACT"},
