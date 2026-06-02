@@ -44,13 +44,14 @@ def export_fp32_onnx(ckpt_path: Path, out_path: Path, opset: int = 17) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    model = build_model(ConvLSTMTinyConfig(**ck["model_config"]))
+    cfg = ConvLSTMTinyConfig(**ck["model_config"])
+    model = build_model(cfg)
     model.load_state_dict(ck["state_dict"])
     model.eval()
 
     torch.onnx.export(
         model,
-        torch.randn(1, 125, 6),
+        torch.randn(1, cfg.window_samples, cfg.n_channels),
         str(out_path),
         input_names=["window"],
         output_names=["logit"],

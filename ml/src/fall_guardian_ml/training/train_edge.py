@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import json
 import random
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
 
 from fall_guardian_ml.datasets.edge_dataset import (
+    ChannelStats,
     EdgeBundle,
     build_edge_bundle,
     fit_channel_stats,
@@ -36,6 +37,7 @@ from fall_guardian_ml.eval.metrics import (
     lead_time_stats,
     pick_threshold_for_fpr,
 )
+from fall_guardian_ml.training.augment import AugmentConfig, augment_window
 from fall_guardian_ml.models.convlstm_tiny import (
     ConvLSTMTinyConfig,
     build_model,
@@ -75,12 +77,20 @@ class TrainConfig:
     # staggered window family already balances classes, and the FPR-constrained
     # threshold (not loss weighting) is now what controls the comfort budget.
     pos_weight_scale: float = 1.0
+    # Default OFF: the Phase 13 ablation showed the orientation quaternion HURT
+    # edge recall (83.9→76.7% isolated) — its absolute, subject-dependent frame
+    # doesn't generalise across held-out subjects, and gyro already carries the
+    # rotational dynamics. Kept as an opt-in (`include_orientation`) for the cloud
+    # model / future data. See BUILD_LOG Phase 13.
+    include_orientation: bool = False
     synthetic: bool = False
     model: ConvLSTMTinyConfig = field(default_factory=ConvLSTMTinyConfig)
+    augment: AugmentConfig = field(default_factory=AugmentConfig)
 
     def flat_params(self) -> dict[str, object]:
-        d = {k: v for k, v in asdict(self).items() if k != "model"}
+        d = {k: v for k, v in asdict(self).items() if k not in ("model", "augment")}
         d.update({f"model.{k}": v for k, v in asdict(self.model).items()})
+        d.update({f"aug.{k}": v for k, v in asdict(self.augment).items()})
         return d
 
 
@@ -158,6 +168,7 @@ def subject_split(bundle: EdgeBundle, cfg: TrainConfig) -> Split:
 
 
 def _make_loader(X, y, batch_size, shuffle):
+    """Plain loader over already-standardized windows (val / test)."""
     import torch
     from torch.utils.data import DataLoader, TensorDataset
 
@@ -165,6 +176,34 @@ def _make_loader(X, y, batch_size, shuffle):
         torch.from_numpy(X).float(), torch.from_numpy(y).float()
     )
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
+
+
+def _make_train_loader(X_raw, y, stats: ChannelStats, aug: AugmentConfig, batch_size, seed):
+    """Training loader: RAW windows → on-the-fly augment → standardize per item.
+
+    Augmenting before standardization keeps the transform factors physical, and
+    re-augmenting each epoch (fresh rng draws) is what manufactures diversity.
+    """
+    import torch
+    from torch.utils.data import DataLoader, Dataset
+
+    class _AugTrainDataset(Dataset):
+        def __init__(self) -> None:
+            self.X = X_raw
+            self.y = y
+            self.rng = np.random.default_rng(seed)
+
+        def __len__(self) -> int:
+            return len(self.X)
+
+        def __getitem__(self, i: int):
+            w = self.X[i]
+            if aug.enabled:
+                w = augment_window(w, self.rng, aug)
+            w = stats.apply(w)  # standardize (T, C) with per-channel train stats
+            return torch.from_numpy(w).float(), torch.tensor(self.y[i], dtype=torch.float32)
+
+    return DataLoader(_AugTrainDataset(), batch_size=batch_size, shuffle=True)
 
 
 def _train_loop(model, loaders, cfg: TrainConfig, pos_weight: float, device, val_is_adl):
@@ -253,7 +292,7 @@ def run_training(
     if cfg.synthetic:
         bundle = make_synthetic_bundle(seed=cfg.seed)
     else:
-        bundle = build_edge_bundle(dataset_root)
+        bundle = build_edge_bundle(dataset_root, include_orientation=cfg.include_orientation)
     print(f"[data] {bundle.summary()}")
 
     # 2. Subject-stratified split.
@@ -265,10 +304,14 @@ def run_training(
     stats = fit_channel_stats(bundle.X[split.train_idx])
     Xn = stats.apply(bundle.X)
 
-    # 4. Build the model.
-    model = build_model(cfg.model).to(device)
+    # 4. Build the model, sized to the actual channel count (6, or 10 with the
+    #    orientation quaternion). The frozen model config is updated to match.
+    n_channels = int(bundle.X.shape[-1])
+    model_cfg = replace(cfg.model, n_channels=n_channels)
+    model = build_model(model_cfg).to(device)
     n_params = count_parameters(model)
-    print(f"[model] ConvLSTM-tiny - {n_params} params (~{n_params / 1024:.1f} KB at INT8)")
+    print(f"[model] ConvLSTM-tiny - {n_params} params (~{n_params / 1024:.1f} KB at INT8), "
+          f"{n_channels} channels")
 
     mlflow.set_experiment(EXPERIMENT_NAME)
     with mlflow.start_run(run_name="convlstm-tiny-baseline") as run:
@@ -278,6 +321,7 @@ def run_training(
                 "data_source": bundle.meta.get("source"),
                 "n_windows": len(bundle),
                 "n_positive": bundle.n_positive,
+                "n_channels": n_channels,
                 "n_params": n_params,
                 "test_subjects": split.test_subjects,
                 "val_subjects": split.val_subjects,
@@ -285,9 +329,11 @@ def run_training(
             }
         )
 
-        # 5. Train.
-        train_loader = _make_loader(
-            Xn[split.train_idx], bundle.y[split.train_idx], cfg.batch_size, shuffle=True
+        # 5. Train. The train loader augments RAW windows on the fly then
+        #    standardizes; val/test use the pre-standardized Xn, never augmented.
+        train_loader = _make_train_loader(
+            bundle.X[split.train_idx], bundle.y[split.train_idx],
+            stats, cfg.augment, cfg.batch_size, cfg.seed,
         )
         val_loader = _make_loader(
             Xn[split.val_idx], bundle.y[split.val_idx], cfg.batch_size, shuffle=False
@@ -356,7 +402,7 @@ def run_training(
         torch.save(
             {
                 "state_dict": model.state_dict(),
-                "model_config": asdict(cfg.model),
+                "model_config": asdict(model_cfg),  # the built config (n_channels matches)
                 "threshold": threshold,
             },
             ckpt_path,
@@ -422,6 +468,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--pos-weight-scale", type=float, default=TrainConfig.pos_weight_scale)
     p.add_argument("--max-fpr-adl", type=float, default=TrainConfig.max_fpr_adl,
                    help="FPR-on-ADL cap; threshold maximises recall under it")
+    p.add_argument("--no-augment", action="store_true", help="disable train-set augmentation")
+    p.add_argument("--no-orientation", action="store_true",
+                   help="drop the orientation quaternion channels (6-channel input)")
     p.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
     args = p.parse_args(argv)
 
@@ -433,6 +482,8 @@ def main(argv: list[str] | None = None) -> None:
         pos_weight_scale=args.pos_weight_scale,
         max_fpr_adl=args.max_fpr_adl,
         synthetic=args.synthetic,
+        augment=AugmentConfig(enabled=not args.no_augment),
+        include_orientation=not args.no_orientation,
     )
     run_training(cfg, dataset_root=args.dataset_root)
 
