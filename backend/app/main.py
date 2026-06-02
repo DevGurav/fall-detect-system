@@ -12,8 +12,9 @@ from fastapi import FastAPI
 
 from app import __version__
 from app.config import get_settings
-from app.routers import health, inference
+from app.routers import health, inference, retraining
 from app.services.detector import CloudDetector
+from app.services.retraining_store import RetrainingStore
 
 
 @asynccontextmanager
@@ -21,6 +22,7 @@ async def _lifespan(app: FastAPI):
     settings = get_settings()
     app.state.settings = settings
     app.state.detector = CloudDetector(settings)  # built once, reused
+    app.state.retraining_store = RetrainingStore(settings)  # built once, reused
     yield
     # (nothing to tear down yet — model handles are GC'd)
 
@@ -33,6 +35,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(health.router)
     app.include_router(inference.router)
+    app.include_router(retraining.router)
     return app
 
 

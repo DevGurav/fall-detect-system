@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     # Confidence threshold above which the cloud CONFIRMS a fall.
     fall_confidence_threshold: float = 0.5
 
+    # Datastore for canceled-false-alarm windows uploaded during the grace period.
+    # Until MLOps persistence lands, the store runs in stub mode (see
+    # services/retraining_store.py). Set to a Postgres DSN to enable real writes.
+    retraining_db_dsn: str | None = None
+
 
 def get_settings() -> Settings:
     return Settings()

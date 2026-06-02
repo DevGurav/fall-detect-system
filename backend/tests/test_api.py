@@ -61,3 +61,54 @@ def test_inference_impact_window_is_fall(client):
 def test_inference_rejects_wrong_window_length(client):
     r = client.post("/v1/inference", json=_request(_window()[:10]))
     assert r.status_code == 422  # Pydantic rejects != 125 samples
+
+
+def test_inference_accepts_explicit_emergency_payload_type(client):
+    body = _request(_window())
+    body["payload_type"] = "emergency"
+    r = client.post("/v1/inference", json=body)
+    assert r.status_code == 200  # payload_type is additive; emergency is the default
+
+
+# --- /v1/retraining: user-canceled false alarms (Payload B) ---
+
+
+def test_retraining_stores_canceled_false_alarm(client):
+    r = client.post("/v1/retraining", json=_request(_window()))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["stored"] is True
+    assert body["label"] == "CANCELED_FALSE_ALARM"
+    assert body["sample_id"]  # a non-empty id was assigned
+
+
+def test_retraining_skips_the_detector(client):
+    # A hard impact (35 m/s²) is exactly what the stub detector WOULD flag as a fall.
+    # Routed to /v1/retraining it must be stored, never scored: no detection verdict.
+    samples = _window()
+    samples[60] = {"ax": 0.0, "ay": 0.0, "az": 35.0, "wx": 0.0, "wy": 0.0, "wz": 0.0}
+
+    # Make the detector explode if anyone calls it on this path.
+    def _boom(_req):
+        raise AssertionError("CloudDetector must not run on the retraining path")
+
+    client.app.state.detector.predict = _boom
+
+    r = client.post("/v1/retraining", json=_request(samples))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["label"] == "CANCELED_FALSE_ALARM"
+    assert "is_fall" not in body and "severity" not in body  # not a detection response
+
+
+def test_retraining_rejects_wrong_window_length(client):
+    r = client.post("/v1/retraining", json=_request(_window()[:10]))
+    assert r.status_code == 422  # same 125-sample contract, validated once on the base
+
+
+def test_retraining_rejects_emergency_payload_type(client):
+    # Can't divert a live emergency trigger into the data-collection path.
+    body = _request(_window())
+    body["payload_type"] = "emergency"
+    r = client.post("/v1/retraining", json=body)
+    assert r.status_code == 422
