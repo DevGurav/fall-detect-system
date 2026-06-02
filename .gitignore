@@ -35,6 +35,8 @@ ml/data/external/**
 !ml/data/external/.gitkeep
 
 # ─── ML artifacts ────────────────────────────────────────────────
+mlruns/
+mlflow.db
 ml/mlruns/
 ml/mlartifacts/
 ml/mlflow.db

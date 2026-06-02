@@ -12,6 +12,9 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
+    # Cloud detector serving: run the exported Transformer (ONNX) torch-free.
+    "numpy>=1.26",
+    "onnxruntime>=1.18",
 ]
 
 [project.optional-dependencies]

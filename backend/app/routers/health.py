@@ -15,6 +15,6 @@ def health(request: Request) -> HealthResponse:
     return HealthResponse(
         status="ok",
         version=__version__,
-        model_version=settings.model_version,
+        model_version=request.app.state.detector.model_version,  # real model or stub
         environment=settings.environment,
     )
