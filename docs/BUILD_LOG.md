@@ -646,4 +646,30 @@ Backend tests live in `backend/` (own venv); ML tests remain in `ml/`.
 
 ---
 
+## Phase 16 — Personalization ingestion: emergency vs. canceled-false-alarm (2026-06-02)
+
+Before training the cloud Transformer, pinned the ingestion contract for the **local grace period** personalization strategy. On an edge trigger the watch buzzes ~10 s; if the user presses Cancel, that 2.5 s window was a false alarm and is uploaded as labeled training data — *not* an emergency. The cloud now ingests two semantically different windows and must route them differently.
+
+### What was built (`backend/`)
+
+- **`payload_type` on the §8 contract** (`schemas.py`) — `PayloadType` enum (`emergency` | `retraining_data`). Refactored the shared window fields into a `WindowEnvelope` base (carrying the 125-sample validator), so both request models validate the locked contract in **one place**. `InferenceRequest` defaults `payload_type=emergency` (existing clients unchanged); `RetrainingRequest` pins it to `retraining_data` via `Literal` (an `emergency` body to the retraining endpoint is a 422 — no diverting a live trigger into data-collection).
+- **`POST /v1/retraining`** (`routers/retraining.py`) — the data-collection path, deliberately separate from `/v1/inference`. It **never touches the `CloudDetector`**; it hands the window to the storage seam.
+- **`RetrainingStore`** (`services/retraining_store.py`) — mirrors the `CloudDetector` stub philosophy: today it logs + returns an ack with a generated `sample_id`; when MLOps persistence lands it writes a `retraining_samples` row (gated on `FG_RETRAINING_DB_DSN`), zero API change. Stores every window labeled `CANCELED_FALSE_ALARM` (module constant, single source of truth).
+- **`RetrainingAck`** response (`stored`, `label`, `sample_id`, `message`) — an ack, **not** a detection verdict; there's no fall to confirm.
+- **`main.py`** builds the store once on `app.state` and registers the router, alongside the detector.
+
+### Why a dedicated endpoint over a `payload_type` response union
+
+A canceled false alarm must never reach the alerting path. Keeping detection (`/v1/inference`) and data-collection (`/v1/retraining`) on separate routes means a stored window and a paged caregiver don't share a code branch — the riskiest place for a bug. Both still share `WindowEnvelope`, so validation isn't fragmented (this is the nuance vs. ADR-008, recorded in **ADR-011**).
+
+### Tests (`tests/test_api.py`) — 9 green (4 prior + 5 new)
+
+Retraining window stored + labeled `CANCELED_FALSE_ALARM`; the detector is **bypassed** (proven by monkeypatching `detector.predict` to raise and asserting the call still succeeds with no `is_fall`/`severity`); the 125-sample contract is still enforced (422); an `emergency` `payload_type` to `/v1/retraining` is a 422; `/v1/inference` still accepts an explicit `emergency`. `ruff` clean; OpenAPI shows both paths + the defaulted/ pinned `payload_type`.
+
+### → Next (green-lit)
+
+Train the **cloud Transformer** on the 43-dim engineered feature vector, IMPACT+POST_IMPACT as positive, subject-stratified like the edge — the precision gate that justifies the edge's accepted ~20% FPR. Export it + load it in `detector.py` (retire the stub).
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._
