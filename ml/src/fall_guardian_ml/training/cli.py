@@ -2,6 +2,8 @@
 
     fg-train edge                       # train ConvLSTM-tiny on WEDA-FALL
     fg-train edge --synthetic           # smoke-test the pipeline end-to-end
+    fg-train cloud                      # train the Transformer detector on WEDA-FALL
+    fg-train cloud --synthetic          # smoke-test the cloud pipeline end-to-end
     fg-train quantize                   # PTQ the trained checkpoint → INT8 .tflite
     fg-train benchmark <model.tflite>   # size + latency of an INT8 model
     fg-train edge-pipeline --synthetic  # train → quantize → benchmark in one go
@@ -40,6 +42,31 @@ def edge(
     cfg = TrainConfig(
         epochs=epochs, batch_size=batch_size, lr=lr, seed=seed,
         pos_weight_scale=pos_weight_scale, target_recall=target_recall, synthetic=synthetic,
+    )
+    run_training(cfg, dataset_root=dataset_root or DEFAULT_DATASET_ROOT)
+
+
+@app.command()
+def cloud(
+    synthetic: bool = typer.Option(False, help="Use synthetic smoke-test data."),
+    epochs: int = typer.Option(40),
+    batch_size: int = typer.Option(128),
+    lr: float = typer.Option(1e-3),
+    seed: int = typer.Option(42),
+    target_recall: float = typer.Option(0.97, help="Val recall floor (cloud product target)."),
+    feature_norm: str = typer.Option("per_user", help="Feature normaliser: per_user | global."),
+    dataset_root: Path | None = typer.Option(None, help="WEDA-FALL-main dir."),
+) -> None:
+    """Train the Transformer cloud detection model (precision gate)."""
+    from fall_guardian_ml.training.train_cloud import (
+        DEFAULT_DATASET_ROOT,
+        TrainConfig,
+        run_training,
+    )
+
+    cfg = TrainConfig(
+        epochs=epochs, batch_size=batch_size, lr=lr, seed=seed,
+        target_recall=target_recall, feature_norm=feature_norm, synthetic=synthetic,
     )
     run_training(cfg, dataset_root=dataset_root or DEFAULT_DATASET_ROOT)
 
