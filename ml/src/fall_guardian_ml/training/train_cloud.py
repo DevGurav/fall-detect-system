@@ -3,24 +3,28 @@
 Week-C precision gate. Mirrors the Week-B edge pipeline (train_edge.py) so the
 two share one mental model:
 
-    assemble windows → subject-stratified split → standardize raw + per-user
-    z-score features → train Transformer (BCE detection + MSE severity)
-    → pick threshold for the recall floor → evaluate (recall, FPR-on-ADL,
-    severity MAE) → calibrate → log everything to MLflow → save the FP32
-    checkpoint + the normalisers + threshold + a sample API payload.
+    assemble windows -> subject-stratified split (or subject k-fold CV)
+    -> standardize raw + per-user z-score features -> train Transformer
+    (focal/BCE detection + MSE severity) -> calibrate (Platt) -> pick the
+    threshold for the recall floor on the *calibrated* scale -> evaluate
+    (recall, FPR-on-ADL, severity MAE) -> log to MLflow -> save the FP32
+    checkpoint + normalisers + threshold + a sample API payload.
 
-Validation methodology (same non-negotiables as the edge, per ARCHITECTURE §4.7):
-  • Subject-stratified split — held-out test subjects never appear in training.
-  • Honest metrics — recall + FPR-on-ADL (+ severity MAE), not accuracy.
-  • Everything MLflow-tracked under the "fall-guardian/cloud" experiment.
+Two evaluation modes (`cfg.cv_folds`):
+  • cv_folds <= 1 — single subject-stratified train/val/test split (fast; used by
+    the synthetic smoke).
+  • cv_folds >= 2 — subject k-fold CV: every subject is held out exactly once and
+    scored by a model that never saw it. The robust threshold is picked on the
+    pooled out-of-fold (OOF) predictions; a final deployment model is then trained
+    on all subjects. This sidesteps the high-variance tiny-test-split estimate that
+    the first single-split baseline suffered (BUILD_LOG Phase 18).
 
-The cloud is the PRECISION gate: it must keep recall high (don't drop a real fall
-the edge caught) while suppressing the edge's ~20% ADL false positives. So we use
-the same recall-first threshold selection as the edge (recall floor at lowest FPR).
+The cloud is the PRECISION gate: keep recall high (don't drop a real fall the edge
+caught) while suppressing the edge's ~20% ADL false positives.
 
 Run it:
-    python -m fall_guardian_ml.training.train_cloud                 # real WEDA-FALL
-    python -m fall_guardian_ml.training.train_cloud --synthetic     # smoke test
+    python -m fall_guardian_ml.training.train_cloud                 # real WEDA-FALL, k-fold CV
+    python -m fall_guardian_ml.training.train_cloud --synthetic --cv-folds 0   # quick smoke
 """
 from __future__ import annotations
 
@@ -55,7 +59,7 @@ MODEL_VERSION = "cloud-transformer-v0.1"
 # Product targets for the cloud detector (MODEL_CARD §3.1).
 TARGET_RECALL = 0.97
 TARGET_FPR_ADL = 0.02
-# Severity → enum cut-points (m/s²), matching the backend stub so train == serve.
+# Severity -> enum cut-points (m/s²), matching the backend stub so train == serve.
 SEVERITY_MEDIUM_MS2 = 20.0
 SEVERITY_HIGH_MS2 = 30.0
 
@@ -68,21 +72,28 @@ class TrainConfig:
     batch_size: int = 128
     lr: float = 1e-3
     weight_decay: float = 1e-4
-    test_fraction: float = 0.2          # fraction of SUBJECTS held out for test
+    test_fraction: float = 0.2          # fraction of SUBJECTS held out for test (single-split mode)
     val_fraction: float = 0.15          # fraction of TRAIN subjects used for val
     seed: int = 42
     # Recall-first operating point (same rationale as the edge): a missed fall is
-    # the fatal error, so guarantee recall ≥ this floor and take the lowest FPR
-    # among thresholds that meet it. Set to the product floor; raise it if the
-    # val→test gap (flagged for the edge) pushes held-out recall under target.
+    # the fatal error, so guarantee recall >= this floor and take the lowest FPR
+    # among thresholds that meet it.
     target_recall: float = TARGET_RECALL
-    # Weight on the severity (MSE) head relative to detection (BCE). Small: the
-    # detection logit is the gate; severity is a secondary, standardized regression.
+    # Weight on the severity (MSE) head relative to detection. Small: the detection
+    # logit is the gate; severity is a secondary, standardized regression.
     severity_loss_weight: float = 0.2
-    # Per-user z-score on engineered features (the locked pipeline step + the
-    # personalization story) vs a single global normaliser. "per_user" fits each
-    # subject's own ADL windows (unsupervised; matches on-device calibration).
-    feature_norm: str = "per_user"     # "per_user" | "global"
+    # Imbalance-aware detection loss. "focal" (default) down-weights easy negatives
+    # — good for the ~6% positive rate; "bce" uses pos_weight (auto neg/pos) x scale.
+    loss: str = "focal"                 # "focal" | "bce"
+    focal_alpha: float = 0.75           # weight on the rare positive class
+    focal_gamma: float = 2.0
+    pos_weight_scale: float = 1.0       # extra recall bias on BCE pos_weight (bce loss only)
+    # Subject k-fold CV (>=2) for a robust threshold + a leakage-free estimate over
+    # ALL subjects; <=1 uses a single train/val/test split.
+    cv_folds: int = 5
+    # Per-user z-score on engineered features (locked pipeline step + personalization)
+    # vs a single global normaliser. "per_user" fits each subject's own ADL windows.
+    feature_norm: str = "per_user"      # "per_user" | "global"
     synthetic: bool = False
     model: TransformerDetectorConfig = field(default_factory=TransformerDetectorConfig)
 
@@ -104,7 +115,7 @@ def _seed_everything(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-# ─── Subject-stratified split (mirrors train_edge.subject_split) ─────────────
+# ─── Subject partitioning ────────────────────────────────────────────────────
 
 
 @dataclass
@@ -116,47 +127,79 @@ class Split:
     val_subjects: list[int]
 
 
-def subject_split(bundle: CloudBundle, cfg: TrainConfig) -> Split:
-    """Partition windows by SUBJECT so no subject is in more than one split.
+def _idx_for(bundle: CloudBundle, subjects) -> np.ndarray:
+    """Window indices belonging to the given subject ids."""
+    want = np.array(sorted({int(s) for s in subjects}), dtype=np.int64)
+    return np.flatnonzero(np.isin(bundle.groups, want))
 
-    Fall subjects (the only source of positive IMPACT/POST_IMPACT windows) are
-    spread across train/val/test so every split can actually measure recall.
+
+def _stratified_carve(bundle, subjects, frac, rng):
+    """Carve `frac` of `subjects` out, keeping fall-subjects in BOTH parts.
+
+    Returns (carved, rest). Used for val carves so the carved set has positives
+    to measure recall on.
     """
+    pos = {int(s) for s in bundle.groups[bundle.y == 1]}
+    p = [int(s) for s in subjects if int(s) in pos]
+    n = [int(s) for s in subjects if int(s) not in pos]
+    rng.shuffle(p)
+    rng.shuffle(n)
+
+    def take(lst):
+        k = max(1, int(round(len(lst) * frac))) if lst else 0
+        return lst[:k], lst[k:]
+
+    cp, rp = take(p)
+    cn, rn = take(n)
+    return sorted(cp + cn), sorted(rp + rn)
+
+
+def subject_split(bundle: CloudBundle, cfg: TrainConfig) -> Split:
+    """Single subject-stratified train/val/test split (no subject in two splits)."""
     rng = np.random.default_rng(cfg.seed)
-    subjects = np.array(sorted({int(s) for s in bundle.groups}))
-
-    pos_subjects = np.array(sorted({int(s) for s in bundle.groups[bundle.y == 1]}))
-    neg_only = np.array([s for s in subjects if s not in set(pos_subjects.tolist())])
-
-    def _carve(pool: np.ndarray, frac: float) -> tuple[list[int], np.ndarray]:
-        pool = pool.copy()
-        rng.shuffle(pool)
-        k = max(1, int(round(len(pool) * frac))) if len(pool) else 0
-        return pool[:k].tolist(), pool[k:]
-
-    test_pos, rest_pos = _carve(pos_subjects, cfg.test_fraction)
-    test_neg, rest_neg = _carve(neg_only, cfg.test_fraction)
-    test_subjects = sorted(test_pos + test_neg)
-
-    val_pos, train_pos = _carve(rest_pos, cfg.val_fraction)
-    val_neg, train_neg = _carve(rest_neg, cfg.val_fraction)
-    val_subjects = sorted(val_pos + val_neg)
-    train_subjects = sorted(train_pos.tolist() + train_neg.tolist())
-
-    def _mask(subs: list[int]) -> np.ndarray:
-        want = set(subs)
-        return np.array([i for i, s in enumerate(bundle.groups) if int(s) in want])
-
+    subjects = sorted({int(s) for s in bundle.groups})
+    test_subjects, rest = _stratified_carve(bundle, subjects, cfg.test_fraction, rng)
+    val_subjects, train_subjects = _stratified_carve(bundle, rest, cfg.val_fraction, rng)
     return Split(
-        train_idx=_mask(train_subjects),
-        val_idx=_mask(val_subjects),
-        test_idx=_mask(test_subjects),
+        train_idx=_idx_for(bundle, train_subjects),
+        val_idx=_idx_for(bundle, val_subjects),
+        test_idx=_idx_for(bundle, test_subjects),
         test_subjects=test_subjects,
         val_subjects=val_subjects,
     )
 
 
-# ─── Feature normalisation (per-user z-score, global fallback) ───────────────
+def _subject_kfold(bundle: CloudBundle, cfg: TrainConfig) -> list[list[int]]:
+    """Partition subjects into `cv_folds` folds, spreading fall-subjects evenly.
+
+    Round-robin assignment (pos subjects first, then neg-only) so each fold gets a
+    share of the scarce young fall-subjects — every fold can measure recall.
+    """
+    rng = np.random.default_rng(cfg.seed)
+    subjects = sorted({int(s) for s in bundle.groups})
+    pos = {int(s) for s in bundle.groups[bundle.y == 1]}
+    p = [s for s in subjects if s in pos]
+    n = [s for s in subjects if s not in pos]
+    rng.shuffle(p)
+    rng.shuffle(n)
+    folds: list[list[int]] = [[] for _ in range(cfg.cv_folds)]
+    for i, s in enumerate(p):
+        folds[i % cfg.cv_folds].append(s)
+    for i, s in enumerate(n):
+        folds[i % cfg.cv_folds].append(s)
+    return [sorted(f) for f in folds]
+
+
+# ─── Normalisation (raw channels + per-user feature z-score + severity) ──────
+
+
+@dataclass
+class _Norms:
+    chan: object                 # ChannelStats (raw 6-ch standardiser)
+    feat_global: ZScoreParams    # global feature fallback
+    feat_per_user: dict          # subject -> ZScoreParams
+    sev_mean: float
+    sev_std: float
 
 
 def _fit_feature_norm(
@@ -164,16 +207,14 @@ def _fit_feature_norm(
 ) -> tuple[ZScoreParams, dict[int, ZScoreParams]]:
     """Fit the engineered-feature normaliser.
 
-    Returns (global_fallback, per_user). The global fallback is fit on TRAIN ADL
-    windows only (leak-free). For "per_user", each subject additionally gets a
-    normaliser fit on *that subject's own ADL windows* — unsupervised and
-    subject-local, exactly the ~10–15 min ADL calibration the watch does at
-    pairing, so fitting it for held-out subjects is not label leakage.
+    Global fallback fit on TRAIN ADL windows (leak-free). For "per_user", each
+    subject also gets a normaliser fit on *its own ADL windows* — unsupervised and
+    subject-local, exactly the ~10–15 min ADL calibration the watch does at pairing,
+    so fitting it for held-out subjects is not label leakage.
     """
-    train_adl = bundle.is_adl.copy()
     mask = np.zeros(len(bundle), dtype=bool)
     mask[train_idx] = True
-    train_adl &= mask
+    train_adl = bundle.is_adl & mask
     global_params = fit_zscore(bundle.feats[train_adl]) if train_adl.any() \
         else fit_zscore(bundle.feats[train_idx])
 
@@ -185,23 +226,30 @@ def _fit_feature_norm(
     return global_params, per_user
 
 
-def _apply_feature_norm(
-    feats: np.ndarray,
-    groups: np.ndarray,
-    global_params: ZScoreParams,
-    per_user: dict[int, ZScoreParams],
-    mode: str,
-) -> np.ndarray:
+def _apply_feature_norm(feats, groups, global_params, per_user, mode) -> np.ndarray:
     if mode != "per_user" or not per_user:
         return global_params.transform(feats).astype(np.float32)
     out = np.empty_like(feats, dtype=np.float32)
     for i in range(len(feats)):
-        params = per_user.get(int(groups[i]), global_params)
-        out[i] = params.transform(feats[i])
+        out[i] = per_user.get(int(groups[i]), global_params).transform(feats[i])
     return out
 
 
-# ─── Training ────────────────────────────────────────────────────────────────
+def _fit_norms(bundle: CloudBundle, train_idx: np.ndarray, cfg: TrainConfig) -> _Norms:
+    chan = fit_channel_stats(bundle.X_raw[train_idx])
+    fg, fpu = _fit_feature_norm(bundle, train_idx, cfg.feature_norm)
+    sev_t = bundle.severity[train_idx]
+    return _Norms(chan, fg, fpu, float(sev_t.mean()), float(sev_t.std() or 1.0))
+
+
+def _apply_norms(bundle: CloudBundle, n: _Norms, cfg: TrainConfig):
+    Xn = n.chan.apply(bundle.X_raw)
+    Fn = _apply_feature_norm(bundle.feats, bundle.groups, n.feat_global, n.feat_per_user, cfg.feature_norm)
+    sev_z = ((bundle.severity - n.sev_mean) / n.sev_std).astype(np.float32)
+    return Xn, Fn, sev_z
+
+
+# ─── Training core ───────────────────────────────────────────────────────────
 
 
 def _make_loader(X_raw, feats, y, sev, batch_size, shuffle):
@@ -232,13 +280,31 @@ def _infer(model, loader, device):
     return np.concatenate(logits), np.concatenate(sevs), np.concatenate(ys)
 
 
+def _focal_loss(logits, targets, alpha: float, gamma: float):
+    """Binary focal loss (Lin et al. 2017) on raw logits — for the ~6% positive rate."""
+    import torch
+    from torch.nn import functional as F
+
+    ce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+    p = torch.sigmoid(logits)
+    p_t = p * targets + (1.0 - p) * (1.0 - targets)
+    loss = ce * (1.0 - p_t).pow(gamma)
+    if alpha >= 0:
+        a_t = alpha * targets + (1.0 - alpha) * (1.0 - targets)
+        loss = a_t * loss
+    return loss.mean()
+
+
 def _train_loop(model, loaders, cfg: TrainConfig, pos_weight: float, device, val_is_adl):
     import torch
     from torch import nn
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    bce = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight], device=device))
     mse = nn.MSELoss()
+    use_focal = cfg.loss == "focal"
+    bce = None if use_focal else nn.BCEWithLogitsLoss(
+        pos_weight=torch.tensor([pos_weight], device=device)
+    )
     train_loader, val_loader = loaders
 
     best_score = (-1.0, -1e9)
@@ -252,25 +318,25 @@ def _train_loop(model, loaders, cfg: TrainConfig, pos_weight: float, device, val
             xb, fb, yb, sb = xb.to(device), fb.to(device), yb.to(device), sb.to(device)
             opt.zero_grad()
             out = model(xb, fb)
-            loss = bce(out.fall_logit, yb) + cfg.severity_loss_weight * mse(out.severity, sb)
+            det = (_focal_loss(out.fall_logit, yb, cfg.focal_alpha, cfg.focal_gamma)
+                   if use_focal else bce(out.fall_logit, yb))
+            loss = det + cfg.severity_loss_weight * mse(out.severity, sb)
             loss.backward()
             opt.step()
             epoch_loss += loss.item() * xb.size(0)
         epoch_loss /= max(len(train_loader.dataset), 1)
 
-        # Recall-first checkpoint selection (identical objective to the edge):
-        # prefer epochs that MEET the recall floor on val at the lowest FPR;
-        # if none do yet, prefer the highest recall.
+        # Recall-first checkpoint selection. The recall/FPR tradeoff is invariant to
+        # the monotonic Platt calibration, so ranking epochs on uncalibrated val
+        # probs is fine; the served threshold is set later on the calibrated scale.
         val_logits, _val_sev, val_y = _infer(model, val_loader, device)
         val_probs = 1.0 / (1.0 + np.exp(-val_logits))
         op = pick_threshold_for_recall(val_y, val_probs, val_is_adl, cfg.target_recall)
         meets = op.recall >= cfg.target_recall
         score = (1.0, -op.fpr_adl) if meets else (0.0, op.recall)
 
-        history.append(
-            {"epoch": epoch, "train_loss": epoch_loss,
-             "val_recall": op.recall, "val_fpr_adl": op.fpr_adl, "val_threshold": op.threshold}
-        )
+        history.append({"epoch": epoch, "train_loss": epoch_loss,
+                        "val_recall": op.recall, "val_fpr_adl": op.fpr_adl})
         if score > best_score:
             best_score = score
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
@@ -278,6 +344,23 @@ def _train_loop(model, loaders, cfg: TrainConfig, pos_weight: float, device, val
     if best_state is not None:
         model.load_state_dict(best_state)
     return model, history
+
+
+def _build_and_train(bundle, Xn, Fn, sev_z, train_idx, val_idx, cfg, device):
+    """Build a model sized to the data and train it on train_idx (val_idx for checkpointing)."""
+    n_ch = int(bundle.X_raw.shape[-1])
+    n_ft = int(bundle.feats.shape[-1])
+    model_cfg = replace(cfg.model, n_channels=n_ch, n_features=n_ft)
+    model = build_model(model_cfg).to(device)
+    train_loader = _make_loader(Xn[train_idx], Fn[train_idx], bundle.y[train_idx],
+                                sev_z[train_idx], cfg.batch_size, True)
+    val_loader = _make_loader(Xn[val_idx], Fn[val_idx], bundle.y[val_idx],
+                              sev_z[val_idx], cfg.batch_size, False)
+    y_tr = bundle.y[train_idx]
+    pos_weight = float(len(y_tr) - int(y_tr.sum())) / float(max(int(y_tr.sum()), 1)) * cfg.pos_weight_scale
+    model, history = _train_loop(model, (train_loader, val_loader), cfg, pos_weight, device,
+                                 bundle.is_adl[val_idx])
+    return model, model_cfg, history
 
 
 # ─── Severity + calibration helpers ──────────────────────────────────────────
@@ -298,14 +381,14 @@ def _brier(probs: np.ndarray, y: np.ndarray) -> float:
     return float(np.mean((probs - y) ** 2))
 
 
-def _fit_platt(val_logits: np.ndarray, val_y: np.ndarray):
-    """Platt scaling: 1-D logistic fit on val logits. None if val is single-class."""
-    if len(np.unique(val_y)) < 2:
+def _fit_platt(logits: np.ndarray, y: np.ndarray):
+    """Platt scaling: 1-D logistic fit on logits. None if single-class."""
+    if len(np.unique(y)) < 2:
         return None
     from sklearn.linear_model import LogisticRegression
 
     lr = LogisticRegression()
-    lr.fit(val_logits.reshape(-1, 1), val_y.astype(int))
+    lr.fit(logits.reshape(-1, 1), y.astype(int))
     return {"coef": float(lr.coef_[0][0]), "intercept": float(lr.intercept_[0])}
 
 
@@ -316,210 +399,55 @@ def _apply_platt(logits: np.ndarray, platt: dict | None) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-z))
 
 
-# ─── Orchestration ───────────────────────────────────────────────────────────
+# ─── Persistence + reporting ─────────────────────────────────────────────────
 
 
-def run_training(
-    cfg: TrainConfig,
-    dataset_root: Path = DEFAULT_DATASET_ROOT,
-    artifact_dir: Path = DEFAULT_ARTIFACT_DIR,
-) -> dict:
-    """Execute one full cloud-training run and return a results dict.
-
-    Logs params, metrics and artifacts to MLflow under "fall-guardian/cloud".
-    """
-    import mlflow
+def _persist_checkpoint(artifact_dir, model, model_cfg, norms: _Norms, threshold, platt, cfg):
     import torch
 
-    _seed_everything(cfg.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    artifact_dir = Path(artifact_dir)
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-
-    # 1. Assemble the dataset.
-    bundle = make_synthetic_cloud_bundle(seed=cfg.seed) if cfg.synthetic \
-        else build_cloud_bundle(dataset_root)
-    print(f"[data] {bundle.summary()}")
-
-    # 2. Subject-stratified split.
-    split = subject_split(bundle, cfg)
-    if len(split.train_idx) == 0 or len(split.test_idx) == 0:
-        raise RuntimeError("Empty train or test split — too few subjects to partition.")
-
-    # 3. Normalisers (fit on TRAIN only for the global parts; per-user is subject-local).
-    chan_stats = fit_channel_stats(bundle.X_raw[split.train_idx])     # raw 6-ch
-    Xn = chan_stats.apply(bundle.X_raw)
-    feat_global, feat_per_user = _fit_feature_norm(bundle, split.train_idx, cfg.feature_norm)
-    Fn = _apply_feature_norm(bundle.feats, bundle.groups, feat_global, feat_per_user, cfg.feature_norm)
-    # Standardize the severity target (peak |a|) on TRAIN; un-standardize at serve.
-    sev_train = bundle.severity[split.train_idx]
-    sev_mean, sev_std = float(sev_train.mean()), float(sev_train.std() or 1.0)
-    sev_z = ((bundle.severity - sev_mean) / sev_std).astype(np.float32)
-
-    # 4. Build the model, sized to the actual channel + feature counts.
-    n_channels = int(bundle.X_raw.shape[-1])
-    n_features = int(bundle.feats.shape[-1])
-    model_cfg = replace(cfg.model, n_channels=n_channels, n_features=n_features)
-    model = build_model(model_cfg).to(device)
-    n_params = count_parameters(model)
-    print(f"[model] TransformerDetector - {n_params} params, {n_channels}ch + {n_features}feat")
-
-    mlflow.set_experiment(EXPERIMENT_NAME)
-    with mlflow.start_run(run_name="transformer-detector-baseline") as run:
-        mlflow.log_params(cfg.flat_params())
-        mlflow.log_params(
-            {
-                "data_source": bundle.meta.get("source"),
-                "n_windows": len(bundle),
-                "n_positive": bundle.n_positive,
-                "n_channels": n_channels,
-                "n_features": n_features,
-                "n_params": n_params,
-                "test_subjects": split.test_subjects,
-                "val_subjects": split.val_subjects,
-                "severity_mean": round(sev_mean, 3),
-                "severity_std": round(sev_std, 3),
-                "device": str(device),
-            }
-        )
-
-        # 5. Train (BCE detection + weighted MSE severity).
-        train_loader = _make_loader(
-            Xn[split.train_idx], Fn[split.train_idx], bundle.y[split.train_idx],
-            sev_z[split.train_idx], cfg.batch_size, shuffle=True,
-        )
-        val_loader = _make_loader(
-            Xn[split.val_idx], Fn[split.val_idx], bundle.y[split.val_idx],
-            sev_z[split.val_idx], cfg.batch_size, shuffle=False,
-        )
-        y_train = bundle.y[split.train_idx]
-        pos_weight = float(len(y_train) - int(y_train.sum())) / float(max(int(y_train.sum()), 1))
-        mlflow.log_params({"pos_weight": round(pos_weight, 3)})
-        print(f"[loss] pos_weight = {pos_weight:.2f}")
-        model, history = _train_loop(
-            model, (train_loader, val_loader), cfg, pos_weight, device,
-            bundle.is_adl[split.val_idx],
-        )
-        for h in history:
-            mlflow.log_metrics(
-                {"train_loss": h["train_loss"], "val_recall": h["val_recall"],
-                 "val_fpr_adl": h["val_fpr_adl"]},
-                step=h["epoch"],
-            )
-
-        # 6. Pick the operating threshold on VAL (recall floor at lowest FPR).
-        val_logits, _vs, val_y = _infer(model, val_loader, device)
-        val_probs = 1.0 / (1.0 + np.exp(-val_logits))
-        val_op = pick_threshold_for_recall(
-            val_y, val_probs, bundle.is_adl[split.val_idx], cfg.target_recall
-        )
-        threshold = val_op.threshold
-        print(f"[threshold] picked {threshold:.4f} on val "
-              f"(recall {val_op.recall:.3f} @ FPR-ADL {val_op.fpr_adl:.3f}, floor {cfg.target_recall})")
-
-        # 7. Calibrate (Platt on val) so the served `confidence` is trustworthy.
-        platt = _fit_platt(val_logits, val_y)
-        brier_raw = _brier(val_probs, val_y)
-        brier_cal = _brier(_apply_platt(val_logits, platt), val_y)
-
-        # 8. Evaluate on the held-out TEST subjects at that threshold.
-        test_loader = _make_loader(
-            Xn[split.test_idx], Fn[split.test_idx], bundle.y[split.test_idx],
-            sev_z[split.test_idx], cfg.batch_size, shuffle=False,
-        )
-        test_logits, test_sev_z, test_y = _infer(model, test_loader, device)
-        test_probs = _apply_platt(test_logits, platt)
-        test_metrics = compute_metrics(test_y, test_probs, bundle.is_adl[split.test_idx], threshold)
-        # Severity MAE in m/s² (un-standardize predictions + targets).
-        sev_pred_ms2 = test_sev_z * sev_std + sev_mean
-        sev_true_ms2 = bundle.severity[split.test_idx]
-        severity_mae = float(np.mean(np.abs(sev_pred_ms2 - sev_true_ms2)))
-
-        mlflow.log_metrics(test_metrics.as_flat_dict(prefix="test_"))
-        mlflow.log_metrics(
-            {
-                "severity_mae_ms2": severity_mae,
-                "val_brier_raw": brier_raw,
-                "val_brier_calibrated": brier_cal,
-                "meets_recall_target": float(test_metrics.recall >= TARGET_RECALL),
-                "meets_fpr_adl_target": float(test_metrics.fpr_adl <= TARGET_FPR_ADL),
-            }
-        )
-
-        # 9. Persist artifacts: FP32 checkpoint (+ everything the backend needs to
-        #    reproduce serving), normalisers, threshold, calibrator, severity scaler.
-        ckpt_path = artifact_dir / "transformer_detector_fp32.pt"
-        torch.save(
-            {
-                "state_dict": model.state_dict(),
-                "model_config": asdict(model_cfg),
-                "threshold": threshold,
-                "platt": platt,
-                "severity_scaler": {"mean": sev_mean, "std": sev_std},
-                "severity_cuts_ms2": {"medium": SEVERITY_MEDIUM_MS2, "high": SEVERITY_HIGH_MS2},
-                "channel_stats": {"mean": chan_stats.mean.tolist(), "std": chan_stats.std.tolist()},
-                "feature_norm_global": {"mean": feat_global.mean.tolist(), "std": feat_global.std.tolist()},
-                "feature_norm_mode": cfg.feature_norm,
-                "model_version": MODEL_VERSION + ("-synthetic" if cfg.synthetic else ""),
-            },
-            ckpt_path,
-        )
-        (artifact_dir / "channel_stats.json").write_text(
-            json.dumps({"mean": chan_stats.mean.tolist(), "std": chan_stats.std.tolist()}, indent=2)
-        )
-        (artifact_dir / "feature_norm.json").write_text(
-            json.dumps({"mode": cfg.feature_norm,
-                        "global": {"mean": feat_global.mean.tolist(), "std": feat_global.std.tolist()}},
-                       indent=2)
-        )
-
-        # 10. A sample inference mapped to the API contract — the cross-package
-        #     compatibility check validates this against backend InferenceResponse.
-        sample = _sample_inference_payload(
-            model, Xn, Fn, bundle, split, threshold, platt, sev_mean, sev_std, cfg, device
-        )
-        (artifact_dir / "sample_inference.json").write_text(json.dumps(sample, indent=2))
-
-        results = {
-            "run_id": run.info.run_id,
-            "data_source": bundle.meta.get("source"),
-            "n_params": n_params,
-            "threshold": threshold,
-            "test": test_metrics.as_flat_dict(),
-            "severity_mae_ms2": severity_mae,
-            "calibration": {"val_brier_raw": brier_raw, "val_brier_calibrated": brier_cal},
-            "targets": {"recall": TARGET_RECALL, "fpr_adl": TARGET_FPR_ADL},
-            "sample_inference": sample,
-            "checkpoint": str(ckpt_path),
-        }
-        (artifact_dir / "cloud_results.json").write_text(json.dumps(results, indent=2, default=str))
-        for name in ("transformer_detector_fp32.pt", "channel_stats.json",
-                     "feature_norm.json", "sample_inference.json", "cloud_results.json"):
-            mlflow.log_artifact(str(artifact_dir / name))
-
-        _print_report(test_metrics, severity_mae, n_params, cfg, bundle.meta.get("source"), sample)
-        return results
+    ckpt_path = artifact_dir / "transformer_detector_fp32.pt"
+    torch.save(
+        {
+            "state_dict": model.state_dict(),
+            "model_config": asdict(model_cfg),
+            "threshold": threshold,           # operates on Platt-calibrated probability
+            "platt": platt,
+            "severity_scaler": {"mean": norms.sev_mean, "std": norms.sev_std},
+            "severity_cuts_ms2": {"medium": SEVERITY_MEDIUM_MS2, "high": SEVERITY_HIGH_MS2},
+            "channel_stats": {"mean": norms.chan.mean.tolist(), "std": norms.chan.std.tolist()},
+            "feature_norm_global": {"mean": norms.feat_global.mean.tolist(),
+                                    "std": norms.feat_global.std.tolist()},
+            "feature_norm_mode": cfg.feature_norm,
+            "model_version": MODEL_VERSION + ("-synthetic" if cfg.synthetic else ""),
+        },
+        ckpt_path,
+    )
+    (artifact_dir / "channel_stats.json").write_text(
+        json.dumps({"mean": norms.chan.mean.tolist(), "std": norms.chan.std.tolist()}, indent=2)
+    )
+    (artifact_dir / "feature_norm.json").write_text(
+        json.dumps({"mode": cfg.feature_norm,
+                    "global": {"mean": norms.feat_global.mean.tolist(),
+                               "std": norms.feat_global.std.tolist()}}, indent=2)
+    )
+    return ckpt_path
 
 
-def _sample_inference_payload(
-    model, Xn, Fn, bundle, split, threshold, platt, sev_mean, sev_std, cfg, device
-) -> dict:
+def _sample_inference_payload(model, Xn, Fn, bundle, pool_idx, threshold, platt, norms, cfg, device) -> dict:
     """Run the model on one window and shape the output like the API InferenceResponse."""
     import torch
 
-    # Prefer a positive test window so the payload exercises the fall path.
-    pool = split.test_idx if len(split.test_idx) else split.val_idx
-    pos = [i for i in pool if bundle.y[i] == 1]
-    idx = pos[0] if pos else int(pool[0])
-
+    pool = list(pool_idx)
+    positives = [i for i in pool if bundle.y[i] == 1]
+    idx = positives[0] if positives else pool[0]
     model.eval()
     with torch.no_grad():
         out = model(
-            torch.from_numpy(Xn[idx : idx + 1]).float().to(device),
-            torch.from_numpy(Fn[idx : idx + 1]).float().to(device),
+            torch.from_numpy(Xn[idx: idx + 1]).float().to(device),
+            torch.from_numpy(Fn[idx: idx + 1]).float().to(device),
         )
     prob = float(_apply_platt(out.fall_logit.cpu().numpy(), platt)[0])
-    peak = float(out.severity.cpu().numpy()[0] * sev_std + sev_mean)
+    peak = float(out.severity.cpu().numpy()[0] * norms.sev_std + norms.sev_mean)
     is_fall = bool(prob >= threshold)
     return {
         "is_fall": is_fall,
@@ -531,26 +459,209 @@ def _sample_inference_payload(
     }
 
 
-def _print_report(test_metrics, severity_mae, n_params, cfg, source, sample) -> None:
+def _print_report(title, metrics, severity_mae, n_params, cfg, source, sample, extra="") -> None:
     tick = lambda ok: "[PASS]" if ok else "[FAIL]"  # noqa: E731
-    print("\n" + "=" * 60)
-    print(f"  CLOUD DETECTOR - Transformer  (data: {source})")
-    print("=" * 60)
-    print(f"  Recall      : {test_metrics.recall:6.3f}   target >={TARGET_RECALL:.2f} "
-          f"{tick(test_metrics.recall >= TARGET_RECALL)}")
-    print(f"  FPR on ADL  : {test_metrics.fpr_adl:6.3f}   target <={TARGET_FPR_ADL:.2f} "
-          f"{tick(test_metrics.fpr_adl <= TARGET_FPR_ADL)}")
-    print(f"  Precision   : {test_metrics.precision:6.3f}")
-    print(f"  F1          : {test_metrics.f1:6.3f}")
-    print(f"  Severity MAE: {severity_mae:6.2f} m/s²")
-    print(f"  Confusion   : TP={test_metrics.tp} FP={test_metrics.fp} "
-          f"TN={test_metrics.tn} FN={test_metrics.fn}")
+    print("\n" + "=" * 64)
+    print(f"  CLOUD DETECTOR - Transformer  ({title}; data: {source})")
+    print("=" * 64)
+    print(f"  Recall      : {metrics.recall:6.3f}   target >={TARGET_RECALL:.2f} "
+          f"{tick(metrics.recall >= TARGET_RECALL)}")
+    print(f"  FPR on ADL  : {metrics.fpr_adl:6.3f}   target <={TARGET_FPR_ADL:.2f} "
+          f"{tick(metrics.fpr_adl <= TARGET_FPR_ADL)}")
+    print(f"  Precision   : {metrics.precision:6.3f}")
+    print(f"  F1          : {metrics.f1:6.3f}")
+    print(f"  Severity MAE: {severity_mae:6.2f} m/s^2")
+    print(f"  Confusion   : TP={metrics.tp} FP={metrics.fp} TN={metrics.tn} FN={metrics.fn}")
     print(f"  Params      : {n_params}")
+    if extra:
+        print(f"  {extra}")
     print(f"  Sample API  : {sample}")
-    print("=" * 60)
+    print("=" * 64)
     if source == "SYNTHETIC":
         print("  ! SYNTHETIC DATA - pipeline-smoke numbers, NOT WEDA-FALL.")
     print()
+
+
+# ─── Orchestration ───────────────────────────────────────────────────────────
+
+
+def run_training(cfg: TrainConfig, dataset_root: Path = DEFAULT_DATASET_ROOT,
+                 artifact_dir: Path = DEFAULT_ARTIFACT_DIR) -> dict:
+    """Single subject-stratified train/val/test run. Logs to MLflow."""
+    import mlflow
+    import torch
+
+    _seed_everything(cfg.seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    artifact_dir = Path(artifact_dir)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    bundle = make_synthetic_cloud_bundle(seed=cfg.seed) if cfg.synthetic else build_cloud_bundle(dataset_root)
+    print(f"[data] {bundle.summary()}")
+    split = subject_split(bundle, cfg)
+    if len(split.train_idx) == 0 or len(split.test_idx) == 0:
+        raise RuntimeError("Empty train or test split — too few subjects to partition.")
+
+    norms = _fit_norms(bundle, split.train_idx, cfg)
+    Xn, Fn, sev_z = _apply_norms(bundle, norms, cfg)
+
+    mlflow.set_experiment(EXPERIMENT_NAME)
+    with mlflow.start_run(run_name="transformer-detector-baseline") as run:
+        model, model_cfg, history = _build_and_train(
+            bundle, Xn, Fn, sev_z, split.train_idx, split.val_idx, cfg, device
+        )
+        n_params = count_parameters(model)
+        print(f"[model] TransformerDetector - {n_params} params, loss={cfg.loss}")
+        mlflow.log_params(cfg.flat_params())
+        mlflow.log_params({
+            "mode": "single-split", "data_source": bundle.meta.get("source"),
+            "n_windows": len(bundle), "n_positive": bundle.n_positive, "n_params": n_params,
+            "test_subjects": split.test_subjects, "val_subjects": split.val_subjects,
+            "device": str(device),
+        })
+        for h in history:
+            mlflow.log_metrics({"train_loss": h["train_loss"], "val_recall": h["val_recall"],
+                                "val_fpr_adl": h["val_fpr_adl"]}, step=h["epoch"])
+
+        # Calibrate on val, then pick the threshold on the CALIBRATED scale (so the
+        # served decision uses the same probability the threshold was chosen on).
+        val_logits, _vs, val_y = _infer(model, _make_loader(
+            Xn[split.val_idx], Fn[split.val_idx], bundle.y[split.val_idx],
+            sev_z[split.val_idx], cfg.batch_size, False), device)
+        platt = _fit_platt(val_logits, val_y)
+        val_probs = _apply_platt(val_logits, platt)
+        threshold = pick_threshold_for_recall(
+            val_y, val_probs, bundle.is_adl[split.val_idx], cfg.target_recall).threshold
+
+        test_logits, test_sev_z, test_y = _infer(model, _make_loader(
+            Xn[split.test_idx], Fn[split.test_idx], bundle.y[split.test_idx],
+            sev_z[split.test_idx], cfg.batch_size, False), device)
+        test_probs = _apply_platt(test_logits, platt)
+        metrics = compute_metrics(test_y, test_probs, bundle.is_adl[split.test_idx], threshold)
+        severity_mae = float(np.mean(np.abs(
+            (test_sev_z * norms.sev_std + norms.sev_mean) - bundle.severity[split.test_idx])))
+        brier_raw = _brier(1.0 / (1.0 + np.exp(-test_logits)), test_y)
+        brier_cal = _brier(test_probs, test_y)
+
+        return _finalize(run, "single-split", model, model_cfg, norms, threshold, platt, cfg,
+                         artifact_dir, bundle, Xn, Fn, split.test_idx, metrics, severity_mae,
+                         brier_raw, brier_cal, n_params, device, extra="")
+
+
+def run_cv_training(cfg: TrainConfig, dataset_root: Path = DEFAULT_DATASET_ROOT,
+                    artifact_dir: Path = DEFAULT_ARTIFACT_DIR) -> dict:
+    """Subject k-fold CV: score every subject out-of-fold, then train a final model."""
+    import mlflow
+    import torch
+
+    _seed_everything(cfg.seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    artifact_dir = Path(artifact_dir)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    bundle = make_synthetic_cloud_bundle(seed=cfg.seed) if cfg.synthetic else build_cloud_bundle(dataset_root)
+    print(f"[data] {bundle.summary()}")
+    folds = _subject_kfold(bundle, cfg)
+    rng = np.random.default_rng(cfg.seed + 1)
+
+    mlflow.set_experiment(EXPERIMENT_NAME)
+    with mlflow.start_run(run_name="transformer-detector-cv") as run:
+        oof_logits = np.full(len(bundle), np.nan, dtype=np.float64)
+        oof_sev_ms2 = np.full(len(bundle), np.nan, dtype=np.float64)
+        fold_recalls: list[float] = []
+
+        for k, holdout in enumerate(folds):
+            trainpool = [s for j, f in enumerate(folds) if j != k for s in f]
+            val_subs, train_subs = _stratified_carve(bundle, trainpool, cfg.val_fraction, rng)
+            train_idx, val_idx, hold_idx = (_idx_for(bundle, train_subs),
+                                            _idx_for(bundle, val_subs),
+                                            _idx_for(bundle, holdout))
+            norms = _fit_norms(bundle, train_idx, cfg)
+            Xn, Fn, sev_z = _apply_norms(bundle, norms, cfg)
+            model, _model_cfg, _hist = _build_and_train(
+                bundle, Xn, Fn, sev_z, train_idx, val_idx, cfg, device)
+            logits, sev_pred_z, _ = _infer(model, _make_loader(
+                Xn[hold_idx], Fn[hold_idx], bundle.y[hold_idx], sev_z[hold_idx],
+                cfg.batch_size, False), device)
+            oof_logits[hold_idx] = logits
+            oof_sev_ms2[hold_idx] = sev_pred_z * norms.sev_std + norms.sev_mean
+            fm = compute_metrics(bundle.y[hold_idx], 1.0 / (1.0 + np.exp(-logits)),
+                                 bundle.is_adl[hold_idx], 0.5)
+            fold_recalls.append(fm.recall)
+            print(f"[cv {k + 1}/{cfg.cv_folds}] holdout={holdout} "
+                  f"n={len(hold_idx)} pos={int(bundle.y[hold_idx].sum())} recall@0.5={fm.recall:.3f}")
+
+        # Pool OOF predictions (every subject scored once by a model that didn't see it).
+        m = ~np.isnan(oof_logits)
+        oof_y, oof_adl = bundle.y[m], bundle.is_adl[m]
+        platt = _fit_platt(oof_logits[m], oof_y)
+        oof_probs = _apply_platt(oof_logits[m], platt)
+        threshold = pick_threshold_for_recall(oof_y, oof_probs, oof_adl, cfg.target_recall).threshold
+        metrics = compute_metrics(oof_y, oof_probs, oof_adl, threshold)
+        severity_mae = float(np.mean(np.abs(oof_sev_ms2[m] - bundle.severity[m])))
+        brier_raw = _brier(1.0 / (1.0 + np.exp(-oof_logits[m])), oof_y)
+        brier_cal = _brier(oof_probs, oof_y)
+
+        # Final deployment model trained on ALL subjects (small internal val carve).
+        all_subjects = sorted({int(s) for s in bundle.groups})
+        val_subs, train_subs = _stratified_carve(bundle, all_subjects, cfg.val_fraction, rng)
+        norms = _fit_norms(bundle, _idx_for(bundle, train_subs), cfg)
+        Xn, Fn, sev_z = _apply_norms(bundle, norms, cfg)
+        model, model_cfg, history = _build_and_train(
+            bundle, Xn, Fn, sev_z, _idx_for(bundle, train_subs), _idx_for(bundle, val_subs), cfg, device)
+        n_params = count_parameters(model)
+        print(f"[model] TransformerDetector - {n_params} params, loss={cfg.loss}, cv_folds={cfg.cv_folds}")
+
+        mlflow.log_params(cfg.flat_params())
+        mlflow.log_params({
+            "mode": f"{cfg.cv_folds}-fold-cv", "data_source": bundle.meta.get("source"),
+            "n_windows": len(bundle), "n_positive": bundle.n_positive, "n_params": n_params,
+            "fold_subjects": [f for f in folds], "device": str(device),
+        })
+        for h in history:
+            mlflow.log_metrics({"train_loss": h["train_loss"], "val_recall": h["val_recall"],
+                                "val_fpr_adl": h["val_fpr_adl"]}, step=h["epoch"])
+
+        extra = (f"OOF over {int(m.sum())} windows / {len(folds)} folds; "
+                 f"fold recall@0.5 mean={np.mean(fold_recalls):.3f}")
+        return _finalize(run, f"{cfg.cv_folds}-fold OOF", model, model_cfg, norms, threshold,
+                         platt, cfg, artifact_dir, bundle, Xn, Fn, np.flatnonzero(m),
+                         metrics, severity_mae, brier_raw, brier_cal, n_params, device, extra)
+
+
+def _finalize(run, title, model, model_cfg, norms, threshold, platt, cfg, artifact_dir,
+              bundle, Xn, Fn, eval_pool_idx, metrics, severity_mae, brier_raw, brier_cal,
+              n_params, device, extra) -> dict:
+    """Shared metric logging + artifact persistence + report for both run modes."""
+    import mlflow
+
+    mlflow.log_metrics(metrics.as_flat_dict(prefix="test_"))
+    mlflow.log_metrics({
+        "severity_mae_ms2": severity_mae,
+        "brier_raw": brier_raw, "brier_calibrated": brier_cal,
+        "threshold": float(threshold),
+        "meets_recall_target": float(metrics.recall >= TARGET_RECALL),
+        "meets_fpr_adl_target": float(metrics.fpr_adl <= TARGET_FPR_ADL),
+    })
+
+    ckpt_path = _persist_checkpoint(artifact_dir, model, model_cfg, norms, threshold, platt, cfg)
+    sample = _sample_inference_payload(model, Xn, Fn, bundle, eval_pool_idx, threshold, platt, norms, cfg, device)
+    (artifact_dir / "sample_inference.json").write_text(json.dumps(sample, indent=2))
+    results = {
+        "run_id": run.info.run_id, "mode": title, "data_source": bundle.meta.get("source"),
+        "n_params": n_params, "threshold": float(threshold),
+        "test": metrics.as_flat_dict(), "severity_mae_ms2": severity_mae,
+        "calibration": {"brier_raw": brier_raw, "brier_calibrated": brier_cal},
+        "targets": {"recall": TARGET_RECALL, "fpr_adl": TARGET_FPR_ADL},
+        "sample_inference": sample, "checkpoint": str(ckpt_path),
+    }
+    (artifact_dir / "cloud_results.json").write_text(json.dumps(results, indent=2, default=str))
+    for name in ("transformer_detector_fp32.pt", "channel_stats.json", "feature_norm.json",
+                 "sample_inference.json", "cloud_results.json"):
+        mlflow.log_artifact(str(artifact_dir / name))
+
+    _print_report(title, metrics, severity_mae, n_params, cfg, bundle.meta.get("source"), sample, extra)
+    return results
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -564,17 +675,24 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--seed", type=int, default=TrainConfig.seed)
     p.add_argument("--target-recall", type=float, default=TrainConfig.target_recall,
                    help="HARD recall floor; threshold meets it at the lowest FPR")
-    p.add_argument("--feature-norm", choices=["per_user", "global"],
-                   default=TrainConfig.feature_norm)
+    p.add_argument("--loss", choices=["focal", "bce"], default=TrainConfig.loss)
+    p.add_argument("--focal-alpha", type=float, default=TrainConfig.focal_alpha)
+    p.add_argument("--focal-gamma", type=float, default=TrainConfig.focal_gamma)
+    p.add_argument("--pos-weight-scale", type=float, default=TrainConfig.pos_weight_scale)
+    p.add_argument("--cv-folds", type=int, default=TrainConfig.cv_folds,
+                   help=">=2 for subject k-fold CV; <=1 for a single train/val/test split")
+    p.add_argument("--feature-norm", choices=["per_user", "global"], default=TrainConfig.feature_norm)
     p.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
     args = p.parse_args(argv)
 
     cfg = TrainConfig(
         epochs=args.epochs, batch_size=args.batch_size, lr=args.lr, seed=args.seed,
-        target_recall=args.target_recall, feature_norm=args.feature_norm,
-        synthetic=args.synthetic,
+        target_recall=args.target_recall, loss=args.loss, focal_alpha=args.focal_alpha,
+        focal_gamma=args.focal_gamma, pos_weight_scale=args.pos_weight_scale,
+        cv_folds=args.cv_folds, feature_norm=args.feature_norm, synthetic=args.synthetic,
     )
-    run_training(cfg, dataset_root=args.dataset_root)
+    runner = run_cv_training if cfg.cv_folds and cfg.cv_folds >= 2 else run_training
+    runner(cfg, dataset_root=args.dataset_root)
 
 
 if __name__ == "__main__":

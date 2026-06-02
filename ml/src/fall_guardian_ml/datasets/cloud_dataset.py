@@ -3,13 +3,19 @@
 The cloud (post-impact detection) model is the PRECISION gate behind the
 recall-first edge model. It is a *binary* classifier on the 2.5 s window:
 
-    positive (1) = IMPACT or POST_IMPACT window  — a fall actually happened
-    negative (0) = everything else               — ADL / background / pre-impact
+    positive (1) = the window CONTAINS the impact instant — a fall happened here
+    negative (0) = everything else — ADL / background / pure post-impact stillness
 
-Positive class = ``Phase.is_positive_for_detection`` (IMPACT + POST_IMPACT), the
-mirror of the edge model's PRE_IMPACT positive. Unlike the edge bundle, this uses
-plain ``slide()`` (no staggered pre-impact-aligned family — that's a *prediction*
-trick); a 2.5 s window straddling the impact naturally takes mode IMPACT/POST.
+Positive class = "``t_impact`` falls inside the window's [start, end]". This is the
+high-SNR signal (the impact spike: huge jerk + peak magnitude) and it matches what
+the edge actually streams (the triggering window + ~1 s post-impact buffer, which
+brackets the impact). We deliberately moved OFF mode-based labeling
+(``Phase.is_positive_for_detection`` on the window mode): the ~550 ms IMPACT phase
+can never be the majority of a 2.5 s window, so mode-labeling collapsed the
+positive class to POST_IMPACT-only stillness — indistinguishable from benign ADL
+lying/resting — and capped held-out recall at ~0.93 (BUILD_LOG Phase 18). Plain
+``slide()`` is used (no staggered pre-impact family — that's an edge *prediction*
+trick).
 
 Each window carries BOTH model inputs:
   • ``X_raw``    — the raw (125, 6) window, fed to the Transformer encoder.
@@ -159,10 +165,17 @@ def build_cloud_bundle(
         windows = slide(data, rec.time, phase_labels, WINDOW_SAMPLES)
 
         for w in windows:
-            is_fall_window = Phase(w.label).is_positive_for_detection
+            # Positive = the window CONTAINS the impact instant (high-SNR spike),
+            # NOT "IMPACT/POST_IMPACT is the window mode". Mode-labeling let the
+            # ~550 ms IMPACT phase be out-voted in a 2.5 s window, collapsing the
+            # positive class to POST_IMPACT-only stillness (BUILD_LOG Phase 18).
+            # This also matches serving: the edge streams the impact-containing window.
+            contains_impact = (
+                t_impact is not None and w.start_time_s <= t_impact <= w.end_time_s
+            )
             X_list.append(w.data)
             f_list.append(extract_features(w.data, sample_rate=sample_rate))
-            y_list.append(1 if is_fall_window else 0)
+            y_list.append(1 if contains_impact else 0)
             g_list.append(rec_id.user_id)
             adl_list.append(not rec_id.is_fall)
             sev_list.append(_peak_accel_magnitude(w.data))
@@ -197,7 +210,7 @@ def build_cloud_bundle(
             "n_falls_used": n_falls_used,
             "n_falls_skipped_below_threshold": n_falls_skipped,
             "n_recordings": len(rec_ids),
-            "positive_class": "IMPACT+POST_IMPACT",
+            "positive_class": "impact-in-window",
         },
     )
 
@@ -274,5 +287,5 @@ def make_synthetic_cloud_bundle(
         phase=np.asarray(p_list, dtype=np.int64)[perm],
         meta={"source": "SYNTHETIC", "seed": seed, "n_subjects": n_subjects,
               "n_channels": N_CHANNELS, "n_features": N_FEATURES,
-              "positive_class": "IMPACT+POST_IMPACT"},
+              "positive_class": "impact-in-window"},
     )

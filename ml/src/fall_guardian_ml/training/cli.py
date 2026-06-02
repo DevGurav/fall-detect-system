@@ -53,7 +53,12 @@ def cloud(
     batch_size: int = typer.Option(128),
     lr: float = typer.Option(1e-3),
     seed: int = typer.Option(42),
-    target_recall: float = typer.Option(0.97, help="Val recall floor (cloud product target)."),
+    target_recall: float = typer.Option(0.97, help="Recall floor (cloud product target)."),
+    loss: str = typer.Option("focal", help="Detection loss: focal | bce."),
+    focal_alpha: float = typer.Option(0.75, help="Focal weight on the rare positive class."),
+    focal_gamma: float = typer.Option(2.0, help="Focal focusing parameter."),
+    pos_weight_scale: float = typer.Option(1.0, help="Extra recall bias on BCE pos_weight (bce only)."),
+    cv_folds: int = typer.Option(5, help=">=2 for subject k-fold CV; <=1 for a single split."),
     feature_norm: str = typer.Option("per_user", help="Feature normaliser: per_user | global."),
     dataset_root: Path | None = typer.Option(None, help="WEDA-FALL-main dir."),
 ) -> None:
@@ -61,14 +66,18 @@ def cloud(
     from fall_guardian_ml.training.train_cloud import (
         DEFAULT_DATASET_ROOT,
         TrainConfig,
+        run_cv_training,
         run_training,
     )
 
     cfg = TrainConfig(
-        epochs=epochs, batch_size=batch_size, lr=lr, seed=seed,
-        target_recall=target_recall, feature_norm=feature_norm, synthetic=synthetic,
+        epochs=epochs, batch_size=batch_size, lr=lr, seed=seed, target_recall=target_recall,
+        loss=loss, focal_alpha=focal_alpha, focal_gamma=focal_gamma,
+        pos_weight_scale=pos_weight_scale, cv_folds=cv_folds, feature_norm=feature_norm,
+        synthetic=synthetic,
     )
-    run_training(cfg, dataset_root=dataset_root or DEFAULT_DATASET_ROOT)
+    runner = run_cv_training if cv_folds and cv_folds >= 2 else run_training
+    runner(cfg, dataset_root=dataset_root or DEFAULT_DATASET_ROOT)
 
 
 @app.command()

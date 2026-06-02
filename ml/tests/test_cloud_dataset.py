@@ -43,11 +43,11 @@ def test_both_classes_present_and_per_subject():
         assert (ys == 1).any() and (ys == 0).any()
 
 
-def test_positive_class_is_impact_post_impact_semantics():
+def test_positive_class_is_impact_in_window():
     """Positive (fall) windows carry a much larger peak |a| than ADL negatives."""
     b = _bundle()
     assert b.severity[b.y == 1].mean() > b.severity[b.y == 0].mean()
-    assert b.meta["positive_class"] == "IMPACT+POST_IMPACT"
+    assert b.meta["positive_class"] == "impact-in-window"
 
 
 def test_synthetic_is_adl_aligns_with_negatives():
