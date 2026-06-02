@@ -72,8 +72,8 @@ The defining feature of v3 vs v1/v2 is that the metrics are *trustworthy*:
 
 | Component | Target |
 |---|---|
-| Edge model (prediction) | recall ≥ 95% on KFall held-out subjects, FPR ≤ 5% on ADL, mean lead time ≥ 300 ms |
-| Cloud model (detection) | recall ≥ 97% on SisFall held-out subjects, FPR ≤ 2% on ADL |
+| Edge model (prediction) | recall ≥ 95% on WEDA-FALL held-out subjects, FPR ≤ 5% on ADL, mean lead time ≥ 300 ms |
+| Cloud model (detection) | recall ≥ 97% on WEDA-FALL held-out subjects, FPR ≤ 2% on ADL |
 | End-to-end pipeline | false-positive rate ≤ 0.5 per day in continuous-wear simulation |
 | Edge model size | ≤ 100 KB INT8 |
 | Edge inference latency | < 80 ms on ESP32-S3 |
@@ -83,8 +83,8 @@ The defining feature of v3 vs v1/v2 is that the metrics are *trustworthy*:
 
 | Week | Focus | Deliverables |
 |---|---|---|
-| **A** | Data foundation | KFall + SisFall download · loaders · sliding-window + feature extraction · EDA · MLflow setup |
-| **B** | Edge model | Train ConvLSTM-tiny on KFall · INT8 quantize · size + simulated latency report |
+| **A** | Data foundation | WEDA-FALL download · loaders · sliding-window + feature extraction · EDA · MLflow setup |
+| **B** | Edge model | Train ConvLSTM-tiny on WEDA-FALL · INT8 quantize · size + simulated latency report |
 | **C** | Cloud model + backend skeleton | Transformer detector · FastAPI + Postgres + JWT · `/v1/inference` (emergency) **+ `/v1/retraining` (canceled-false-alarm capture)** · deploy to Fly.io |
 | **D** | Mobile rebuild | Flutter — Riverpod + GoRouter + design system + auth + pairing + live status + **emergency button** + **local grace period (10 s buzz + Cancel)** + offline + bilingual |
 | **E** | Indian-ADL collection + retraining | Collect 60–100 min of supplemental ADL data · retrain both models · **fine-tune on collected `CANCELED_FALSE_ALARM` windows / per-user thresholds** · re-measure |

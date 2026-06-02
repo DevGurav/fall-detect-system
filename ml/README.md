@@ -9,7 +9,7 @@ PyTorch training + MLflow tracking for the **edge** (ConvLSTM-tiny, pre-impact p
 cd ml
 uv sync                          # or: pip install -e .[dev]
 
-# 1. Download datasets — see DATA.md for KFall + SisFall instructions
+# 1. Download datasets — see DATA.md for WEDA-FALL instructions
 # 2. Verify everything is in place
 uv run fg-data verify
 
@@ -25,7 +25,7 @@ uv run jupyter lab notebooks/01_eda.ipynb
 ```text
 ml/
 ├── src/fall_guardian_ml/
-│   ├── datasets/        ← KFall + SisFall loaders + Indian-ADL adapter
+│   ├── datasets/        ← WEDA-FALL loader + edge/cloud dataset builders
 │   ├── features/        ← sliding window, magnitude, jerk, FFT, normalization
 │   ├── models/          ← ConvLSTM-tiny (edge) + Transformer encoder (cloud)
 │   ├── training/        ← training loops, subject-stratified CV, calibration
