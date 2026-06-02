@@ -529,4 +529,53 @@ All runs in MLflow `fall-guardian/edge`.
 
 ---
 
+## Phase 13 — Pushing recall: orientation channels + augmentation (2026-06-01)
+
+### The goal
+
+Phase 12 left recall at 83.9% (FPR 6.0%) — measurement/stability tricks (CV, calibration) won't fix that; we need more actual predictive power to reach 95% recall under the ≤5% FPR cap. Two physics-driven levers, with ~34 KB of INT8 budget still spare:
+
+1. **Orientation channels** — feed the orientation quaternion (s,i,j,k) into the raw window (6 → 10 channels). Falls involve rapid tumbling/posture change; accel+gyro only see acceleration and angular *velocity*, not absolute posture.
+2. **Light augmentation** — time-warp (±10%, all channels) + magnitude scaling (±10%, accel/gyro only — scaling a unit quaternion is meaningless), applied on-the-fly to TRAINING windows only, before standardization, to manufacture fall diversity from the small 14-subject pool.
+
+### What was implemented
+
+- `datasets/edge_dataset.py`: optional orientation channels (`include_orientation`), with an alignment fix — the loader can leave the orientation stream a few samples short of accel/gyro, so it's edge-hold-padded / truncated to a common time axis.
+- `training/augment.py` (new): `augment_window` (time-warp + magnitude scaling) + `AugmentConfig`.
+- `training/train_edge.py`: a raw→augment→standardize training `DataLoader` (val/test stay un-augmented), model channel count derived from the data (`dataclasses.replace`), AdamW unchanged, MLflow logs the aug params. CLI flags `--no-augment` / `--no-orientation` for ablation.
+- `eval/onnx_export.py`: export sample shape now reads `n_channels` from the checkpoint config (no longer hard-coded to 6).
+
+### The ablation (real WEDA-FALL, seed 42, 60 epochs, FPR-constrained @ ≤5%)
+
+Ran the full 2×2 to disentangle the two levers — exactly the kind of controlled comparison Phase 11 taught us to do before believing a single number:
+
+| Config | Recall | FPR-ADL | Precision | F1 |
+|---|---|---|---|---|
+| 6ch, no aug (Phase 12 baseline) | 0.839 | 0.060 | 0.669 | 0.744 |
+| 10ch (+orientation), no aug | 0.767 | 0.051 | 0.691 | 0.727 |
+| 10ch (+orientation) + aug | 0.796 | 0.039 | 0.719 | 0.756 |
+| **6ch + aug (shipped)** | **0.861** | 0.052 | 0.692 | **0.767** |
+
+### Findings — both intuitions were half-right
+
+- **Orientation HURT recall** (83.9 → 76.7% in isolation). Counterintuitive but explicable: the WEDA-FALL orientation quaternion is an *absolute*, subject-/session-dependent frame that doesn't transfer to held-out subjects, and the rotational *dynamics* of a tumble are already in the gyro. The 4 extra channels added cross-subject variance, not discriminative signal. So we **dropped orientation from the edge model** (kept as an opt-in for the cloud model, which uses engineered features and may benefit).
+- **Augmentation HELPED** — and my worry that time-warp would blur the sharp pre-impact transient was wrong. On 6 channels it lifted recall 83.9 → **86.1%** and F1 to a session-best **0.767**, FPR essentially at the cap (5.2%).
+- **Best shipped config: deeper v2 net + 6 channels + augmentation + FPR-constrained threshold** → recall 86.1%, FPR 5.2%, F1 0.767, ~46 KB INT8.
+
+### The honest verdict on the 95% goal
+
+We moved recall 83.9 → 86.1% at the comfort cap, but **did not reach the 90s**. Across four configs, recall at ≤5% FPR tops out around 86%. That's looking less like a tuning gap and more like a **real ceiling for single-stage wrist pre-impact prediction on this dataset**: at the wrist, the run-up to a fall and vigorous everyday motion are genuinely hard to separate 300–500 ms ahead, and WEDA-FALL only has falls from 14 young subjects. Honest tradeoff: 86% recall / 5% FPR is a strong *edge* stage, and the architecture's cloud detection model is the designed second gate — but a 14% miss rate at the edge is not yet life-safety-grade on its own.
+
+### Decision + next options (not yet done)
+
+Shipped 6ch + augmentation as the new default (orientation off). To actually break into the 90s, the levers left are about *more/better signal*, not more tuning:
+1. **More fall data** — SmartFall (elderly ADL) + the Week-E Indian-ADL collection widen the distribution the model must separate; the small fall pool is the core limiter.
+2. **Heavier / smarter augmentation on positives** (rotation, mixup, time-shift) — augmentation clearly helps; lean into it.
+3. **Two-stage framing** — accept ~86% edge recall and lean on the cloud detector for the final catch, instead of demanding 95% from the edge alone.
+4. (Deferred per your call) k-fold CV + calibration to safely convert the small FPR headroom into recall.
+
+All four runs in MLflow `fall-guardian/edge`. Shipped checkpoint = 6ch + aug.
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._
