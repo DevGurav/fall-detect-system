@@ -99,9 +99,9 @@ Technical reference for the current Fall Guardian v3 system. Reflects the locked
 
 **Stack**: Python service, PyTorch model loaded into a long-lived process, exposed as an internal RPC to the gateway. Containerised separately so it can scale independently. MLflow-tracked: every deployed model is identifiable by run-id + semantic version + checksum, rollback-able from the registry.
 
-**Model**: Transformer encoder (or 1D-CNN → LSTM hybrid — pick chosen empirically during training) operating on the 43-dim engineered feature vector for the 2.5 s window. Outputs:
+**Model**: Transformer encoder over the raw 2.5 s window (125×6) with the 43-dim engineered feature vector fused at the pooled head (or a 1D-CNN → LSTM hybrid — pick chosen empirically during training). Outputs:
 
-- 3-class softmax over `{ADL, near-fall, true-fall}`.
+- Binary `P(fall)` — IMPACT+POST_IMPACT vs not. Matches the edge's PRE_IMPACT mirror (`Phase.is_positive_for_detection`) and the `is_fall` ingestion contract; the earlier 3-class `{ADL, near-fall, true-fall}` draft is superseded (see ADR-011 / MODEL_CARD §1.3).
 - Regression head for severity (predicted peak acceleration magnitude).
 - Calibrated probability via Platt-scaling or isotonic regression so the confidence number is trustworthy.
 

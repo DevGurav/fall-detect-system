@@ -14,13 +14,13 @@ This card is a **living document**. Sections marked *"To be populated at trainin
 |---|---|---|
 | Role | Pre-impact prediction (alert ~300–500 ms before ground impact) | Post-impact detection (confirm/suppress edge prediction + assign severity) |
 | Where it runs | ESP32-S3 wearable, TFLite Micro INT8 | FastAPI service on Fly.io, PyTorch FP32 |
-| Architecture | ConvLSTM-tiny | Transformer encoder (alt: 1D-CNN → LSTM hybrid) |
-| Input | Raw 6-channel window (125 samples × {ax, ay, az, wx, wy, wz}) at 50 Hz | 43-dim engineered feature vector per window |
-| Output | `P(pre-impact fall) ∈ [0, 1]` | `{ADL, near-fall, true-fall}` softmax + severity scalar |
+| Architecture | ConvLSTM-tiny | Transformer encoder over the raw window + fused engineered features (alt: 1D-CNN → LSTM hybrid) |
+| Input | Raw 6-channel window (125 samples × {ax, ay, az, wx, wy, wz}) at 50 Hz | Raw 125×6 window **and** the fused 43-dim engineered feature vector |
+| Output | `P(pre-impact fall) ∈ [0, 1]` | `P(fall) ∈ [0, 1]` (binary: IMPACT+POST_IMPACT vs not) + severity scalar |
 | Size budget | ≤100 KB INT8 | unconstrained (FP32) |
 | Latency budget | <80 ms on ESP32-S3 | <500 ms end-to-end |
 | Versioning | semver, MLflow-tracked | semver, MLflow-tracked |
-| Status (this card) | **Not trained yet** — architecture locked, training scheduled Week B | **Not trained yet** — architecture locked, training scheduled Week C |
+| Status (this card) | **Not trained yet** — architecture locked, training scheduled Week B | **Training pipeline built** — architecture locked, synthetic smoke passing; WEDA-FALL baseline metrics pending |
 
 ### 1.2 Edge Predictor architecture (locked)
 
@@ -38,18 +38,31 @@ Quantisation: post-training INT8 via TensorFlow Lite converter. If the model ove
 
 ### 1.3 Cloud Detector architecture (locked)
 
+A Transformer encoder over the **raw 125×6 window**, with the **43-d engineered
+feature vector fused at the pooled head**. Two heads: a **binary** detection logit
+(IMPACT+POST_IMPACT vs not) and a severity regression. This reconciles two earlier
+drafts of this card — a "Transformer on the 43-d vector" (a single token has no
+sequence for attention) and a 3-class `{ADL, near-fall, true-fall}` softmax (no
+"near-fall" label exists in the phase pipeline, and the API is binary `is_fall`).
+The binary head matches `pre_impact_labels.Phase.is_positive_for_detection`, the
+`InferenceResponse` contract, and the backend stub. See ADR-011 and
+`ml/src/fall_guardian_ml/models/transformer_detector.py`.
+
 ```text
-Input:  [125, ~30]                ← raw 6 + engineered features broadcast
-↓ Linear projection (d_model = 64)
-↓ Positional encoding
-↓ Transformer encoder × 4 layers (4 heads, d_ff = 128)
-↓ Mean pool over time
-↓ Dense(32) + ReLU
-↓ Dense(3) + Softmax              → {ADL, near-fall, true-fall}
-↓ + Severity head (regression)    → predicted impact-acceleration magnitude
+raw window (125, 6)                ← ax,ay,az,wx,wy,wz @ 50 Hz (no orientation; API carries 6 ch)
+↓ Linear projection (d_model = 64) + sinusoidal positional encoding
+↓ Transformer encoder × 4 layers (4 heads, d_ff = 128, pre-norm, GELU)
+↓ Mean pool over time              → (64,)
+   ⊕ concat 43-d engineered feature vector  → (107,)
+↓ Dense(32) + GELU + Dropout
+├─ Dense(1)  → fall logit          P(fall) via sigmoid (BCE); Platt-calibrated
+└─ Dense(1)  → severity            regressed (standardized) peak |a|; → none/low/medium/high
 ```
 
-Pick of Transformer vs. CNN-LSTM hybrid will be decided empirically on the held-out test subjects of WEDA-FALL + SmartFall.
+Both inputs come from the same window the backend already receives, so train and
+serve agree (the backend computes `extract_features()` on the incoming window). A
+1D-CNN→LSTM hybrid over the raw window remains the documented empirical alternative,
+to be compared on held-out WEDA-FALL (+ later SmartFall) subjects.
 
 ### 1.4 Frameworks + versions
 
