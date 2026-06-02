@@ -24,7 +24,8 @@ Technical reference for the current Fall Guardian v3 system. Reflects the locked
               ↓
    ┌────────────────────────────────────────────────────────────────┐
    │  FastAPI Gateway  (Fly.io)                                     │
-   │  /v1/inference   ← Pydantic validate · JWT · rate-limit        │
+   │  /v1/inference   ← emergency window → cloud detector → alert    │
+   │  /v1/retraining  ← canceled false alarm → stored for MLOps      │
    │  /v1/devices     ← OAuth user routes                           │
    │  /v1/events      ← timeline · acknowledge · escalation         │
    └────────┬───────────────────────────────────────────────────────┘
@@ -363,12 +364,13 @@ The field defaults to `emergency`, so existing clients are unaffected. It is pin
 
 (High-level. Detailed week-by-week build sequence is in the main plan file.)
 
-- **Now**: Week A (data foundation) — loader, label derivation, windowing, features, tests. ✅ Done.
-- **Next**: EDA notebook (lag-distribution validation), MLflow project setup.
-- **Then**: Week B — train edge ConvLSTM-tiny baseline, INT8 quantize, latency benchmark.
-- **Then**: Week C — train cloud Transformer + FastAPI skeleton + Fly.io deploy.
-- **Then**: Week D — Flutter rebuild with Riverpod + GoRouter + emergency button + offline.
-- **Then**: Week E — Indian-ADL collection + retraining of both models.
-- **Then**: Week F — TFLite-Micro deployment to ESP32-S3, Next.js dashboard, observability stack, CI/CD, demo video.
+- Week A (data foundation) — loader, label derivation, windowing, features, tests. ✅ Done.
+- Week B — edge ConvLSTM-tiny baseline, INT8 quantize, latency benchmark. ✅ Done (96.5% recall on held-out subjects, ~46 KB INT8).
+- **Now — Week C**: cloud Transformer detector + FastAPI gateway + Fly.io deploy. The gateway skeleton + both ingestion paths (`/v1/inference` emergency, `/v1/retraining` canceled-false-alarm capture) are in; the Transformer is next.
+- **Then — Week D**: Flutter rebuild with Riverpod + GoRouter + emergency button + the **local grace period (10 s buzz + Cancel)** + offline.
+- **Then — Week E**: Indian-ADL collection + retraining of both models, including **fine-tuning on collected `CANCELED_FALSE_ALARM` windows / per-user thresholds**.
+- **Then — Week F**: TFLite-Micro deployment to ESP32-S3 (incl. the on-watch grace-period/Cancel UX), Next.js dashboard, observability stack, CI/CD, demo video.
+
+**Personalization is a core feature, woven across C–E**: the local grace period + the canceled-false-alarm retraining loop let the system learn each user's non-falls. Architecture in §3.2/§8, rationale in ADR-011.
 
 Beyond v3.0: edge-only mode (no cloud dependency), more datasets (Geriatric Wrist IMU), federated learning across users, custom PCB form factor.

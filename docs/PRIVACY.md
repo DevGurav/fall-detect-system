@@ -26,9 +26,11 @@ Fall Guardian distinguishes **three** categories. Each is collected only with ex
 ### 2.1 Sensor data (the headline)
 
 - **What**: 3-axis accelerometer, 3-axis gyroscope, orientation quaternion, battery level, signal-strength estimate. All from the wrist-worn device.
-- **When sent off-device**: in steady state, **nothing is sent**. The edge model runs entirely on-device. Only when the edge model detects a possible fall is a short window (~2.5 s before + ~1 s after the trigger) uploaded to the cloud for confirmation.
-- **Purpose**: real-time fall safety monitoring. No other use is authorised.
+- **When sent off-device**: in steady state, **nothing is sent**. The edge model runs entirely on-device. Only when the edge model detects a possible fall is a short window (~2.5 s before + ~1 s after the trigger) uploaded to the cloud — either for confirmation (an emergency) or, if the user cancels it, as a labeled training sample (see below).
+- **Purpose**: real-time fall safety monitoring, and — for windows the user explicitly cancels — improving the model's accuracy for that user. No other use is authorised.
 - **Retention**: triggered windows are retained for **30 days** by default for model improvement; the user can opt out (in which case the cloud uses the window for inference and immediately deletes it).
+
+**Canceled false alarms (the local grace period).** Because the edge model is recall-first and fires often, a triggered alert first buzzes the watch for ~10 s. If the user presses **Cancel**, the system treats that window as a false alarm: it is **not** routed to the detector and no caregiver is alerted. Instead the watch uploads the window to `/v1/retraining`, where it is stored labeled `CANCELED_FALSE_ALARM` and used to fine-tune the model / adjust that user's thresholds (the user is ground truth for their own non-falls). This is a user-initiated action, falls under the same "model improvement" purpose and the **30-day default retention + opt-out** above, and is presented separately in the consent flow (§3). The stored window is motion data only — never audio, video, or location.
 
 ### 2.2 Account data
 

@@ -666,6 +666,10 @@ A canceled false alarm must never reach the alerting path. Keeping detection (`/
 
 Retraining window stored + labeled `CANCELED_FALSE_ALARM`; the detector is **bypassed** (proven by monkeypatching `detector.predict` to raise and asserting the call still succeeds with no `is_fall`/`severity`); the 125-sample contract is still enforced (422); an `emergency` `payload_type` to `/v1/retraining` is a 422; `/v1/inference` still accepts an explicit `emergency`. `ruff` clean; OpenAPI shows both paths + the defaulted/ pinned `payload_type`.
 
+### Roadmap + docs formalization
+
+The grace period + retraining loop were a strategic pivot not in the original Week A–F blueprint, so the master docs now carry it as a **core product feature** rather than an implementation detail: README (new "Personalization" section + Build-sequence rows C/D/E + status bumped to Week C), ARCHITECTURE (§1 diagram now shows `/v1/retraining`; §9 roadmap snapshot refreshed and calls out personalization across C–E), PRIVACY (§2.1 now specifies canceled-false-alarm window storage as a user-initiated, consented, 30-day-retained "model improvement" purpose), and MODEL_CARD (§4.6 the per-user retraining corpus + its bias caveat; §7 per-user threshold calibration upgraded from "future" to a shipping feature). *Noted for later: README still has stale KFall/SisFall dataset references (Targets table + Weeks A/B) that contradict ADR-006 — a separate cleanup.*
+
 ### → Next (green-lit)
 
 Train the **cloud Transformer** on the 43-dim engineered feature vector, IMPACT+POST_IMPACT as positive, subject-stratified like the edge — the precision gate that justifies the edge's accepted ~20% FPR. Export it + load it in `detector.py` (retire the stub).

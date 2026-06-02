@@ -2,7 +2,7 @@
 
 Industry-grade wrist-worn fall prediction & detection system for elderly users (Indian context).
 
-> 🚧 **Status:** Active build — Week A (data foundation). See [Build sequence](#build-sequence) below.
+> 🚧 **Status:** Active build — Week C (cloud model + backend). Edge baseline shipped (96.5% recall on held-out subjects). See [Build sequence](#build-sequence) below.
 
 ## The system in one diagram
 
@@ -25,6 +25,12 @@ Industry-grade wrist-worn fall prediction & detection system for elderly users (
 ```
 
 **The headline:** the wearable can alert in the **~300 ms window between fall initiation and ground impact** — not just after the person hits the floor.
+
+## Personalization — the local grace period
+
+A core product feature, not an afterthought: the system **learns each user's false alarms**. The edge model is recall-first and fires often by design, so when it triggers the watch first buzzes locally for a **~10 s grace period**. If the user presses **Cancel** (it wasn't a fall), no caregiver is alerted — instead the watch silently uploads that exact 2.5 s window to the cloud, where it is stored as labeled training data (`CANCELED_FALSE_ALARM`) for **per-user fine-tuning and threshold tuning**. The user is the ground truth for their own non-falls.
+
+This splits ingestion into two paths that never cross: emergencies (`POST /v1/inference` → cloud detector → caregiver) and canceled false alarms (`POST /v1/retraining` → stored for MLOps, detector skipped). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §3.2/§8 and [`docs/DECISIONS.md`](docs/DECISIONS.md) ADR-011.
 
 ## Why a rebuild
 
@@ -79,9 +85,9 @@ The defining feature of v3 vs v1/v2 is that the metrics are *trustworthy*:
 |---|---|---|
 | **A** | Data foundation | KFall + SisFall download · loaders · sliding-window + feature extraction · EDA · MLflow setup |
 | **B** | Edge model | Train ConvLSTM-tiny on KFall · INT8 quantize · size + simulated latency report |
-| **C** | Cloud model + backend skeleton | Transformer on SisFall · FastAPI + Postgres + JWT · `/v1/inference` returning both models · deploy to Fly.io |
-| **D** | Mobile rebuild | Flutter — Riverpod + GoRouter + design system + auth + pairing + live status + **emergency button** + offline + bilingual |
-| **E** | Indian-ADL collection + retraining | Collect 60–100 min of supplemental ADL data · retrain both models · re-measure |
+| **C** | Cloud model + backend skeleton | Transformer detector · FastAPI + Postgres + JWT · `/v1/inference` (emergency) **+ `/v1/retraining` (canceled-false-alarm capture)** · deploy to Fly.io |
+| **D** | Mobile rebuild | Flutter — Riverpod + GoRouter + design system + auth + pairing + live status + **emergency button** + **local grace period (10 s buzz + Cancel)** + offline + bilingual |
+| **E** | Indian-ADL collection + retraining | Collect 60–100 min of supplemental ADL data · retrain both models · **fine-tune on collected `CANCELED_FALSE_ALARM` windows / per-user thresholds** · re-measure |
 | **F** | Edge deploy + dashboard + polish | TFLite Micro on ESP32-S3 · Next.js dashboard · observability stack · CI/CD · demo video |
 
 ## License

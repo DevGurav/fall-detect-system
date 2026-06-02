@@ -182,6 +182,14 @@ Documented in `ml/src/fall_guardian_ml/datasets/` and `ml/src/fall_guardian_ml/f
 6. 43-dimensional engineered feature vector per window (`features/extraction.extract_features`) — cloud only
 7. Per-user Z-score normalization fit on the user's ADL windows (`features/normalization.fit_zscore`)
 
+### 4.6 Per-user retraining data — canceled false alarms (personalization loop)
+
+Once deployed, the product collects an additional, per-user corpus: windows that the edge model flagged but the **user canceled** during the local grace period (the watch buzzes ~10 s; the user presses Cancel). These are uploaded to `POST /v1/retraining`, stored labeled `CANCELED_FALSE_ALARM`, and used to **fine-tune the detector and tune that user's thresholds** — the user is ground truth for their own non-falls. Architecture in `docs/ARCHITECTURE.md` §3.2/§8; rationale in `DECISIONS.md` ADR-011. Properties relevant to this card:
+
+- **Label provenance**: user-confirmed negatives (true ADL the model mistook for a possible fall) — the highest-signal hard negatives available, and exactly the FPR-driving motions worth hardening against.
+- **Bias caveat**: this corpus is self-selected per user (only motions that tripped the edge model, only users who bother to cancel). It is suitable for **personalization / FPR reduction**, not as a general fall-recall training source. Any global retraining that incorporates it must guard against drift in the positive (fall) class, which this corpus never contains.
+- **Status**: the ingestion + storage path is built (Week C); the storage backend (`RetrainingStore`) and the fine-tuning step itself are stubbed/scheduled (Week E).
+
 ---
 
 ## 5. Evaluation data
@@ -243,7 +251,7 @@ The mobile app must communicate to the user + caregiver that:
 - **Wrist position dependency.** Performance is only evaluated on wrist-mounted data. The model will perform poorly on waist/chest/ankle deployment.
 - **Sampling-rate dependency.** Resampling to 50 Hz is a hard assumption in the pipeline. Devices that sample at substantially different rates will need a different feature pipeline (UP-Fall at 18 Hz is the test case for low-rate degradation).
 - **Indian-ADL coverage is project-author's curation.** The original-content nature of the Indian-ADL supplement is a strength (originality) and a limitation (small sample, limited subject diversity). Future work should expand subject pool.
-- **Threshold defaults.** PRE_IMPACT lead = 500 ms, guard = 50 ms, post-tail = 500 ms, impact magnitude threshold = 20 m/s². These are literature-informed defaults, not user-specific. A future per-user threshold calibration step is in the v3.x roadmap.
+- **Threshold defaults.** PRE_IMPACT lead = 500 ms, guard = 50 ms, post-tail = 500 ms, impact magnitude threshold = 20 m/s². These are literature-informed defaults, not user-specific. Per-user threshold calibration is now a core feature (the canceled-false-alarm personalization loop, §4.6 / ADR-011): the ingestion path that feeds it ships in Week C, and the calibration step itself lands in Week E.
 
 ---
 
