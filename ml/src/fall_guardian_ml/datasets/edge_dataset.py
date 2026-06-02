@@ -92,8 +92,16 @@ def build_edge_bundle(
     include_young: bool = True,
     include_elder: bool = True,
     movements: list[str] | None = None,
+    include_orientation: bool = True,
 ) -> EdgeBundle:
     """Walk WEDA-FALL and assemble the binary pre-impact windowed dataset.
+
+    Channels (in order): accel (x,y,z), gyro (x,y,z), and — when
+    `include_orientation` — the orientation quaternion (s,i,j,k), for 10 total.
+    Orientation gives the model absolute posture/tumble context that accel+gyro
+    (which only see acceleration and angular *velocity*) can't, and we already
+    load+resample it, so it's free signal. A recording missing the orientation
+    stream is zero-padded on those 4 channels to keep the channel count uniform.
 
     Skips any fall recording whose impact peak fails the sanity threshold
     (peak |a| < 20 m/s²) — those are likely mislabeled and would inject noisy
@@ -122,8 +130,24 @@ def build_edge_bundle(
         rec = load_recording(
             dataset_root, rec_id, sample_rate=sample_rate, fall_timestamps=fall_ts
         )
-        # 6-channel raw window: accel (x,y,z) ++ gyro (x,y,z).
-        data = np.concatenate([rec.accel, rec.gyro], axis=1).astype(np.float32)
+        # Raw window: accel (x,y,z) ++ gyro (x,y,z) [++ orientation quat (s,i,j,k)].
+        parts = [rec.accel, rec.gyro]
+        if include_orientation:
+            T = rec.accel.shape[0]
+            ori = rec.orientation
+            if ori is None:
+                ori = np.zeros((T, 4), dtype=np.float32)
+            elif ori.shape[0] != T:
+                # The loader can leave orientation a few samples short of
+                # accel/gyro. Align to T: edge-hold pad (quaternion drifts slowly)
+                # or truncate, so all channels share one time axis.
+                if ori.shape[0] < T:
+                    pad = np.repeat(ori[-1:], T - ori.shape[0], axis=0)
+                    ori = np.concatenate([ori, pad], axis=0)
+                else:
+                    ori = ori[:T]
+            parts.append(ori)
+        data = np.concatenate(parts, axis=1).astype(np.float32)
 
         t_impact: float | None = None
         if rec_id.is_fall and rec.fall_window is not None:
@@ -164,6 +188,8 @@ def build_edge_bundle(
         meta={
             "source": "WEDA-FALL",
             "sample_rate": sample_rate,
+            "n_channels": int(X_list[0].shape[1]),
+            "include_orientation": include_orientation,
             "n_falls_used": n_falls_used,
             "n_falls_skipped_below_threshold": n_falls_skipped,
             "n_recordings": len(rec_ids),
