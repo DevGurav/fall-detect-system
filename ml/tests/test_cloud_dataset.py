@@ -30,6 +30,7 @@ def test_synthetic_bundle_shapes_and_contract():
     assert b.groups.shape == (n,)
     assert b.is_adl.shape == (n,) and b.is_adl.dtype == bool
     assert b.severity.shape == (n,)
+    assert b.phase.shape == (n,) and b.movement.shape == (n,)
     assert b.X_raw.dtype == np.float32 and b.feats.dtype == np.float32
     assert not np.isnan(b.feats).any()
 

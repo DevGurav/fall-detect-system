@@ -337,6 +337,8 @@ def _train_loop(model, loaders, cfg: TrainConfig, pos_weight: float, device, val
 
         history.append({"epoch": epoch, "train_loss": epoch_loss,
                         "val_recall": op.recall, "val_fpr_adl": op.fpr_adl})
+        print(f"    epoch {epoch + 1:2d}/{cfg.epochs}: loss={epoch_loss:.4f} "
+              f"val_recall={op.recall:.3f} val_fpr_adl={op.fpr_adl:.3f}", flush=True)
         if score > best_score:
             best_score = score
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
@@ -482,6 +484,34 @@ def _print_report(title, metrics, severity_mae, n_params, cfg, source, sample, e
     print()
 
 
+def _print_fp_breakdown(y, preds, movement, subject) -> None:
+    """Where do the false positives come from? Break FP (among negatives) down by
+    source movement code and by subject — directly targets the precision problem."""
+    y = np.asarray(y).astype(bool)
+    preds = np.asarray(preds).astype(bool)
+    neg = ~y
+    fp = preds & neg
+    print(f"  [FP-by-movement]  {int(fp.sum())} FPs over {int(neg.sum())} negative windows:", flush=True)
+    for mv in sorted({str(x) for x in movement}):
+        sel = neg & (movement == mv)
+        n = int(sel.sum())
+        if n:
+            f = int((fp & (movement == mv)).sum())
+            print(f"      {mv:>5}: {f:5d} / {n:5d}  ({100 * f / n:5.1f}%)", flush=True)
+    print("  [FP-by-subject]:", flush=True)
+    for s in sorted({int(x) for x in subject[neg]}):
+        sel = neg & (subject == s)
+        n = int(sel.sum())
+        f = int((fp & (subject == s)).sum())
+        print(f"      U{s:02d}: {f:5d} / {n:5d}  ({100 * f / max(n, 1):5.1f}%)", flush=True)
+
+
+def _save_predictions(path, probs, y, is_adl, movement, subject, sev_pred, sev_true, threshold):
+    """Persist per-window predictions so FPs can be analysed without re-training."""
+    np.savez(path, prob=probs, y=y, is_adl=is_adl, movement=np.asarray(movement).astype(str),
+             subject=subject, sev_pred=sev_pred, sev_true=sev_true, threshold=np.array([threshold]))
+
+
 # ─── Orchestration ───────────────────────────────────────────────────────────
 
 
@@ -543,6 +573,16 @@ def run_training(cfg: TrainConfig, dataset_root: Path = DEFAULT_DATASET_ROOT,
         brier_raw = _brier(1.0 / (1.0 + np.exp(-test_logits)), test_y)
         brier_cal = _brier(test_probs, test_y)
 
+        # FP diagnosis: where do the false positives come from? Persist for re-analysis.
+        _print_fp_breakdown(test_y, test_probs >= threshold,
+                            bundle.movement[split.test_idx], bundle.groups[split.test_idx])
+        _save_predictions(artifact_dir / "test_predictions.npz", test_probs, test_y,
+                          bundle.is_adl[split.test_idx], bundle.movement[split.test_idx],
+                          bundle.groups[split.test_idx],
+                          test_sev_z * norms.sev_std + norms.sev_mean,
+                          bundle.severity[split.test_idx], threshold)
+        mlflow.log_artifact(str(artifact_dir / "test_predictions.npz"))
+
         return _finalize(run, "single-split", model, model_cfg, norms, threshold, platt, cfg,
                          artifact_dir, bundle, Xn, Fn, split.test_idx, metrics, severity_mae,
                          brier_raw, brier_cal, n_params, device, extra="")
@@ -601,6 +641,14 @@ def run_cv_training(cfg: TrainConfig, dataset_root: Path = DEFAULT_DATASET_ROOT,
         severity_mae = float(np.mean(np.abs(oof_sev_ms2[m] - bundle.severity[m])))
         brier_raw = _brier(1.0 / (1.0 + np.exp(-oof_logits[m])), oof_y)
         brier_cal = _brier(oof_probs, oof_y)
+
+        # FP diagnosis over the full OOF set (every subject scored once). Persisted
+        # so the false positives can be analysed without re-running the 5 folds.
+        _print_fp_breakdown(oof_y, oof_probs >= threshold, bundle.movement[m], bundle.groups[m])
+        _save_predictions(artifact_dir / "oof_predictions.npz", oof_probs, oof_y, oof_adl,
+                          bundle.movement[m], bundle.groups[m], oof_sev_ms2[m],
+                          bundle.severity[m], threshold)
+        mlflow.log_artifact(str(artifact_dir / "oof_predictions.npz"))
 
         # Final deployment model trained on ALL subjects (small internal val carve).
         all_subjects = sorted({int(s) for s in bundle.groups})
