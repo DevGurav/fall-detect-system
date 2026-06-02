@@ -676,4 +676,29 @@ Train the **cloud Transformer** on the 43-dim engineered feature vector, IMPACT+
 
 ---
 
+## Phase 17 — Week C: Cloud Transformer detector — training pipeline + synthetic smoke (2026-06-02)
+
+Built the cloud detection training pipeline, **mirroring the Week-B edge stack** so the two share one shape (and one set of conventions to maintain). The architecture was reviewed and locked before any code: a Transformer over the raw window + fused 43-dim features, with a **binary** fall head + severity regression — not the model card's old 3-class softmax (see MODEL_CARD §1.3 reconciliation).
+
+### What was built (`ml/`)
+
+- **`datasets/cloud_dataset.py`** — `CloudBundle` + `build_cloud_bundle` (WEDA-FALL; positive = IMPACT+POST_IMPACT via `Phase.is_positive_for_detection`; plain `slide()`, no pre-impact family — that's an edge *prediction* trick; 6-ch raw + 43-dim `extract_features` per window; peak |a| as the severity target) + `make_synthetic_cloud_bundle`. **6 channels only** — exactly what the API `IMUSample` carries; no orientation, which the device never sends.
+- **`models/transformer_detector.py`** — Transformer encoder (d_model 64, 4 layers × 4 heads, d_ff 128, pre-norm, sinusoidal PE) → mean-pool → concat the 43-dim vector → Dense(32) → binary fall logit + severity scalar. Mirrors the `convlstm_tiny` module shape (frozen config, `build_model`, `count_parameters`).
+- **`training/train_cloud.py`** — mirrors `train_edge`: subject-stratified split, per-user feature z-score (`fit_zscore` — the personalization-aligned + locked normaliser) with a global fallback, raw-channel standardization, BCE + weighted-MSE, recall-first threshold (`pick_threshold_for_recall`, floor 0.97), Platt calibration, MLflow `fall-guardian/cloud`, and FP32 checkpoint + normalisers + threshold + a sample API payload.
+- **`fg-train cloud`** command + dataset/model unit tests (full ml suite green).
+
+### Synthetic smoke — plumbing verified (NOT real metrics)
+
+`fg-train cloud --synthetic`: **137,858 params**; MLflow run logged (params + per-epoch + test metrics + 5 artifacts); Platt calibration improved val Brier **0.108 → 0.025**; and the exported sample inference **validates against the backend `InferenceResponse`** — the seam from Phase 15/16 will accept the real model with zero API change. Recall/FPR on synthetic are smoke numbers only.
+
+### Docs reconciled
+
+MODEL_CARD §1.1/§1.3 + ARCHITECTURE §2.3 updated to the binary Transformer-over-sequence + fused-features design; the old 3-class `{ADL, near-fall, true-fall}` softmax is superseded (no such label in the phase pipeline, and the API is binary `is_fall`).
+
+### → Next (real run, then serving)
+
+Train on **real WEDA-FALL** (gates: recall ≥0.97, FPR-ADL ≤2%, cascaded edge→cloud FP ≤0.5/day), then load the checkpoint in `backend/app/services/detector.py::_load_model` to retire the stub + backfill MODEL_CARD §3.2. SmartFall ADL augmentation is the deferred FPR fast-follow. *Carried-over flag: README still has stale KFall/SisFall dataset refs (Targets + Weeks A/B) vs ADR-006.*
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._
