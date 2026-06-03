@@ -181,3 +181,44 @@ class EventPage(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# ─── Auth + pairing (Week D security perimeter) ──────────────────────────────
+
+
+class RegisterRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=128)
+    full_name: str | None = None
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int                   # seconds
+
+
+class PairingCodeResponse(BaseModel):
+    """A short-lived code a paired user shows to a device during provisioning."""
+
+    code: str
+    expires_at: datetime
+
+
+class PairRequest(BaseModel):
+    code: str = Field(min_length=8, max_length=8)   # 8-char Crockford base32
+    device_id: str = Field(min_length=1)
+
+
+class PairResponse(BaseModel):
+    """The device's long-lived token, returned once on successful pairing."""
+
+    device_token: str
+    token_type: str = "bearer"
+    device_id: str
+    user_id: UUID

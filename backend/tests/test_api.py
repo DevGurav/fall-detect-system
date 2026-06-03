@@ -2,7 +2,9 @@
 
 The committed ONNX model is loaded by default (`client`), so detection-value
 assertions are made against a forced-stub fixture (`stub_client`); the real-model
-tests assert the response contract, not specific verdicts.
+tests assert the response contract, not specific verdicts. Ingestion routes are
+device-authenticated, so requests carry a Bearer device token (`device_headers`)
+whose `did` matches the window's `device_id` ("dev-001").
 """
 from __future__ import annotations
 
@@ -59,9 +61,9 @@ def test_real_model_is_loaded_not_stub(client):
     assert client.app.state.detector.is_stub is False
 
 
-def test_inference_real_model_contract(client):
+def test_inference_real_model_contract(client, device_headers):
     """The trained model returns a valid InferenceResponse (verdict is model-dependent)."""
-    r = client.post("/v1/inference", json=_request(_window()))
+    r = client.post("/v1/inference", json=_request(_window()), headers=device_headers())
     assert r.status_code == 200
     body = r.json()
     assert isinstance(body["is_fall"], bool)
@@ -74,20 +76,20 @@ def test_inference_real_model_contract(client):
 # ─── contract / routing (model-agnostic) ─────────────────────────────────────
 
 
-def test_inference_rejects_wrong_window_length(client):
-    r = client.post("/v1/inference", json=_request(_window()[:10]))
+def test_inference_rejects_wrong_window_length(client, device_headers):
+    r = client.post("/v1/inference", json=_request(_window()[:10]), headers=device_headers())
     assert r.status_code == 422  # Pydantic rejects != 125 samples
 
 
-def test_inference_accepts_explicit_emergency_payload_type(client):
+def test_inference_accepts_explicit_emergency_payload_type(client, device_headers):
     body = _request(_window())
     body["payload_type"] = "emergency"
-    r = client.post("/v1/inference", json=body)
+    r = client.post("/v1/inference", json=body, headers=device_headers())
     assert r.status_code == 200
 
 
-def test_retraining_stores_canceled_false_alarm(client):
-    r = client.post("/v1/retraining", json=_request(_window()))
+def test_retraining_stores_canceled_false_alarm(client, device_headers):
+    r = client.post("/v1/retraining", json=_request(_window()), headers=device_headers())
     assert r.status_code == 200
     body = r.json()
     assert body["stored"] is True
@@ -95,31 +97,31 @@ def test_retraining_stores_canceled_false_alarm(client):
     assert body["sample_id"]
 
 
-def test_retraining_skips_the_detector(client):
+def test_retraining_skips_the_detector(client, device_headers):
     samples = _window()
     samples[60] = {"ax": 0.0, "ay": 0.0, "az": 35.0, "wx": 0.0, "wy": 0.0, "wz": 0.0}
 
-    def _boom(_req):
+    def _boom(_req, _profile=None):
         raise AssertionError("CloudDetector must not run on the retraining path")
 
     client.app.state.detector.predict = _boom
 
-    r = client.post("/v1/retraining", json=_request(samples))
+    r = client.post("/v1/retraining", json=_request(samples), headers=device_headers())
     assert r.status_code == 200
     body = r.json()
     assert body["label"] == "CANCELED_FALSE_ALARM"
     assert "is_fall" not in body and "severity" not in body
 
 
-def test_retraining_rejects_wrong_window_length(client):
-    r = client.post("/v1/retraining", json=_request(_window()[:10]))
+def test_retraining_rejects_wrong_window_length(client, device_headers):
+    r = client.post("/v1/retraining", json=_request(_window()[:10]), headers=device_headers())
     assert r.status_code == 422
 
 
-def test_retraining_rejects_emergency_payload_type(client):
+def test_retraining_rejects_emergency_payload_type(client, device_headers):
     body = _request(_window())
     body["payload_type"] = "emergency"
-    r = client.post("/v1/retraining", json=body)
+    r = client.post("/v1/retraining", json=body, headers=device_headers())
     assert r.status_code == 422
 
 
@@ -131,8 +133,8 @@ def test_stub_mode_when_model_absent(stub_client):
     assert stub_client.get("/health").json()["model_version"] == "stub-0.0"
 
 
-def test_stub_resting_window_is_not_fall(stub_client):
-    r = stub_client.post("/v1/inference", json=_request(_window()))  # ~1g resting
+def test_stub_resting_window_is_not_fall(stub_client, device_headers):
+    r = stub_client.post("/v1/inference", json=_request(_window()), headers=device_headers())
     assert r.status_code == 200
     body = r.json()
     assert body["is_fall"] is False
@@ -140,10 +142,10 @@ def test_stub_resting_window_is_not_fall(stub_client):
     assert body["action"] == "suppress"
 
 
-def test_stub_impact_window_is_fall(stub_client):
+def test_stub_impact_window_is_fall(stub_client, device_headers):
     samples = _window()
     samples[60] = {"ax": 0.0, "ay": 0.0, "az": 35.0, "wx": 0.0, "wy": 0.0, "wz": 0.0}
-    r = stub_client.post("/v1/inference", json=_request(samples))
+    r = stub_client.post("/v1/inference", json=_request(samples), headers=device_headers())
     assert r.status_code == 200
     body = r.json()
     assert body["is_fall"] is True

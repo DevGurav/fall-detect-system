@@ -1,7 +1,12 @@
 """Application settings (12-factor: env-overridable, sane defaults for local dev)."""
 from __future__ import annotations
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Dev-only default JWT secret (>= 32 bytes for HS256). The validator on Settings
+# refuses to boot with it outside local, so production must set FG_JWT_SECRET.
+_DEV_JWT_SECRET = "dev-insecure-change-me-not-for-production-use"
 
 
 class Settings(BaseSettings):
@@ -41,6 +46,21 @@ class Settings(BaseSettings):
     @property
     def resolved_database_url(self) -> str | None:
         return self.database_url or self.retraining_db_dsn
+
+    # Auth (ARCHITECTURE §5): HS256 JWTs (PyJWT) + bcrypt passwords. The secret has
+    # a dev default, but the app refuses to boot with it outside local (validator).
+    jwt_secret: str = _DEV_JWT_SECRET
+    jwt_algorithm: str = "HS256"
+    user_access_ttl_min: int = 15          # per-user access token lifetime
+    device_token_ttl_days: int = 365       # per-device token, issued at pairing
+    pairing_code_ttl_min: int = 5          # 8-char pairing code lifetime
+    pairing_max_attempts: int = 5          # redeem attempts before a code locks
+
+    @model_validator(mode="after")
+    def _require_secret_outside_local(self) -> Settings:
+        if self.environment != "local" and self.jwt_secret == _DEV_JWT_SECRET:
+            raise ValueError("FG_JWT_SECRET must be set when FG_ENVIRONMENT is not 'local'")
+        return self
 
 
 def get_settings() -> Settings:

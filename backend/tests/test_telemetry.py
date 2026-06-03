@@ -1,10 +1,10 @@
 """W2 telemetry + read side — DB-less contract tests and pure-logic units.
 
 The DB-backed behavior (real inserts, timeline queries, acknowledge) needs
-Postgres; here we assert the endpoints gate cleanly to 503 without a database,
-that /v1/inference still returns a verdict (fall persistence no-ops DB-less), and
-unit-test the derived online/offline status. End-to-end DB tests run against a
-live Postgres (see backend/README.md).
+Postgres; here we assert the endpoints gate cleanly to 503 *after* auth passes
+(so a valid token is supplied), that /v1/inference still returns a verdict
+(fall persistence no-ops DB-less), and unit-test the derived online/offline
+status. End-to-end DB tests run against a live Postgres (see backend/README.md).
 """
 from __future__ import annotations
 
@@ -42,29 +42,33 @@ def client():
         yield c
 
 
-# ─── DB-less: the telemetry + read endpoints gate to 503 ─────────────────────
+# ─── DB-less: authed telemetry + read endpoints gate to 503 ──────────────────
 
 
-def test_heartbeat_requires_db(client):
-    r = client.post("/v1/devices/heartbeat", json={"device_id": "dev-001", "battery_pct": 80})
+def test_heartbeat_requires_db(client, device_headers):
+    r = client.post(
+        "/v1/devices/heartbeat",
+        json={"device_id": "dev-001", "battery_pct": 80},
+        headers=device_headers("dev-001"),
+    )
     assert r.status_code == 503
 
 
-def test_list_devices_requires_db(client):
-    assert client.get("/v1/devices").status_code == 503
+def test_list_devices_requires_db(client, user_headers):
+    assert client.get("/v1/devices", headers=user_headers).status_code == 503
 
 
-def test_list_events_requires_db(client):
-    assert client.get("/v1/events").status_code == 503
+def test_list_events_requires_db(client, user_headers):
+    assert client.get("/v1/events", headers=user_headers).status_code == 503
 
 
-def test_acknowledge_requires_db(client):
-    r = client.post(f"/v1/events/{_ZERO_UUID}/acknowledge")
+def test_acknowledge_requires_db(client, user_headers):
+    r = client.post(f"/v1/events/{_ZERO_UUID}/acknowledge", headers=user_headers)
     assert r.status_code == 503  # 503 gates before the (absent) row is ever looked up
 
 
 def test_heartbeat_request_rejects_out_of_range_battery():
-    # The battery bound lives on the schema, independent of the DB gate.
+    # The battery bound lives on the schema, independent of the auth/DB gates.
     with pytest.raises(ValidationError):
         HeartbeatRequest(device_id="d", battery_pct=150)
     assert HeartbeatRequest(device_id="d", battery_pct=80).battery_pct == 80
@@ -73,17 +77,18 @@ def test_heartbeat_request_rejects_out_of_range_battery():
 # ─── /v1/inference stays available DB-less (fall persistence is a no-op) ──────
 
 
-def test_inference_returns_verdict_without_db(client):
-    r = client.post("/v1/inference", json=_request(_window()))
+def test_inference_returns_verdict_without_db(client, device_headers):
+    r = client.post("/v1/inference", json=_request(_window()), headers=device_headers())
     assert r.status_code == 200
     assert isinstance(r.json()["is_fall"], bool)
 
 
-def test_inference_fall_window_does_not_error_without_db(client):
+def test_inference_fall_window_does_not_error_without_db(client, device_headers):
     samples = _window()
     samples[60] = {"ax": 0.0, "ay": 0.0, "az": 35.0, "wx": 0.0, "wy": 0.0, "wz": 0.0}
     # Whatever the verdict, the is_fall -> record_fall path must no-op cleanly DB-less.
-    assert client.post("/v1/inference", json=_request(samples)).status_code == 200
+    r = client.post("/v1/inference", json=_request(samples), headers=device_headers())
+    assert r.status_code == 200
 
 
 # ─── pure logic: derived device status ───────────────────────────────────────

@@ -14,12 +14,14 @@ from fastapi import FastAPI
 from app import __version__
 from app.config import get_settings
 from app.db import Database
-from app.routers import devices, events, health, inference, retraining
+from app.routers import auth, devices, events, health, inference, retraining
 from app.services.calibration_store import CalibrationStore
 from app.services.detector import CloudDetector
 from app.services.device_service import DeviceService
 from app.services.event_store import EventStore
+from app.services.pairing_service import PairingService
 from app.services.retraining_store import RetrainingStore
+from app.services.user_service import UserService
 
 
 @asynccontextmanager
@@ -32,6 +34,8 @@ async def _lifespan(app: FastAPI):
     app.state.retraining_store = RetrainingStore(settings, app.state.db)
     app.state.event_store = EventStore(settings, app.state.db)
     app.state.device_service = DeviceService(settings, app.state.db)
+    app.state.user_service = UserService(settings, app.state.db)
+    app.state.pairing_service = PairingService(settings, app.state.db)
     yield
     if app.state.db is not None:
         await app.state.db.dispose()
@@ -44,6 +48,7 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
     app.include_router(health.router)
+    app.include_router(auth.router)
     app.include_router(inference.router)
     app.include_router(retraining.router)
     app.include_router(events.router)
