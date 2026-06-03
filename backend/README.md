@@ -22,7 +22,8 @@ backend/
 │   ├── deps.py            request deps (require_db → 503 when DB-less)
 │   ├── routers/           health, inference, retraining, events, devices
 │   └── services/
-│       ├── detector.py          CloudDetector (ONNX Transformer; heuristic stub fallback)
+│       ├── detector.py          CloudDetector (ONNX; per-user calibration; stub fallback)
+│       ├── calibration_store.py CalibrationStore (per-device profile lookup)
 │       ├── retraining_store.py  RetrainingStore (Postgres write; stub when DB-less)
 │       ├── event_store.py       EventStore (persist confirmed falls + timeline/ack)
 │       └── device_service.py    DeviceService (heartbeat upsert + live status)
@@ -80,5 +81,8 @@ The watch tags every uploaded window with `payload_type`:
   `GET /v1/devices` reports live status (online/offline derived from `last_seen_at`); `GET /v1/events` is a
   paginated timeline and `POST /v1/events/{id}/acknowledge` clears an alert. Read/telemetry routes return 503
   when DB-less; results scope to `X-User-Id` when supplied.
-- ⏭ Next: the per-user normalization + threshold seam in `detector.py` (reads `device_calibration`), then
-  real per-device JWT + pairing-code flow + Postgres RLS to replace the trusted-stub identity.
+- ✅ **Personalization (Week D)**: `/v1/inference` looks up the device's `device_calibration` and applies it
+  per request — per-user z-score normalisers + a `threshold_override`, each falling back to the model's global
+  stats when absent. Verified end-to-end: a per-device threshold flips the verdict on the same window.
+- ⏭ Next: the fit-at-pairing *write* path for `device_calibration` (normalisers from ADL wear; threshold
+  tuned from canceled false alarms), then real per-device JWT + pairing + Postgres RLS.

@@ -788,4 +788,22 @@ The per-user personalization seam in `detector.py` (W3): thread each device's `d
 
 ---
 
+## Phase 24 — Week D: per-user personalization seam wired into the detector (2026-06-03)
+
+W3 — the detector now applies each device's calibration per request, the last piece of the "personalization is a core feature" thread (ADR-011, ARCHITECTURE §4.6/§3.2).
+
+### The seam
+`detector.py` gains a `CalibrationProfile` (per-user channel + feature z-score normalisers and a `threshold_override`). `predict(req, profile=None)` threads it into `_model_predict`: the device's own normalisers replace the model's global `channel_stats` / `feature_norm`, and `threshold_override` replaces the global decision threshold. Each field falls back **independently** to the values baked into `cloud_detector.meta.json` — a `_valid` length-guard means a partial or malformed profile is ignored rather than crashing — so an uncalibrated device behaves exactly as before. The stub detector ignores calibration (it's a peak heuristic).
+
+### Lookup
+New `CalibrationStore` (DB-gated, like the other services) joins `device_calibration → devices` on the §8 `device_id` and returns a `CalibrationProfile`, or None (DB-less / unpaired / uncalibrated). The `/v1/inference` router looks it up per request and passes it to `predict`. The fit-at-pairing **write** path is a later slice; a Redis cache in front of this read is a likely follow-up since it runs on every emergency window.
+
+### Verified
+ruff clean; **29/29** backend tests green (6 new: a `threshold_override` of 1.1 always suppresses and 0.0 always confirms — deterministic through the real model; per-field fallback to the global stats incl. the wrong-length guard; and the store no-op without a DB). **Proven end-to-end against the live Postgres**: a device with no calibration suppressed a resting window (global threshold), then after inserting `threshold_override = 0.0` for that device the *same* window (identical confidence 0.0007) flipped to a confirmed fall — the per-device threshold loaded from the DB changed the verdict, on the real `cloud-transformer-v0.1` model.
+
+### → Next (queued)
+The fit-at-pairing path that *writes* `device_calibration` (z-score normalisers from ~10–15 min of ADL wear; threshold tuned from the device's canceled false alarms in `retraining_samples`), then real per-device JWT + pairing-code flow + Postgres RLS.
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._
