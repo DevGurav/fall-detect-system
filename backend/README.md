@@ -28,6 +28,7 @@ backend/
 │       └── device_service.py    DeviceService (heartbeat upsert + live status)
 ├── alembic/               migrations (versions/0001 = initial schema) + async env.py
 ├── alembic.ini
+├── scripts/               integration_smoke.py (end-to-end smoke vs a live DB)
 ├── tests/                 TestClient smoke + contract + telemetry tests + offline guards
 └── pyproject.toml
 ```
@@ -41,9 +42,14 @@ uv run uvicorn app.main:app --reload      # http://127.0.0.1:8000/docs
 uv run pytest                             # smoke + contract + schema tests (no DB needed)
 
 # Persistence is optional for local dev: with no FG_DATABASE_URL the gateway runs
-# DB-less (stub stores). To enable Postgres, point at a DSN and apply migrations:
-export FG_DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/fall_guardian
+# DB-less (stub stores). For real persistence, start Postgres and apply migrations:
+docker compose up -d --wait                                  # repo root: Postgres 16
+export FG_DATABASE_URL=postgresql+asyncpg://fall:fall@localhost:5432/fall_guardian
 uv run alembic upgrade head
+
+# End-to-end smoke vs the live DB (heartbeat -> inference -> events -> acknowledge):
+uv run uvicorn app.main:app &                                # in one shell
+uv run python scripts/integration_smoke.py                   # in another
 ```
 
 ## Ingestion routing (`payload_type`)

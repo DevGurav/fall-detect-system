@@ -770,4 +770,22 @@ The personalization seam in the detector: thread each device's `device_calibrati
 
 ---
 
+## Phase 23 — Week D: persistence layer locked — verified end-to-end against real Postgres (2026-06-03)
+
+Closed the integration risk flagged in Phases 21–22 (schema + telemetry were verified *offline* only — no live engine in the env). This phase stood the stack up on a real database and drove the whole pipeline through it.
+
+### Local Postgres
+Added `docker-compose.yml` (Postgres 16, the §2.2 system of record) at the repo root. `docker compose up -d --wait` → `alembic upgrade head` physically created the schema: all 8 tables + `alembic_version`, `alembic current` = `0001 (head)`. The hand-written migration is now validated against a real engine — Postgres accepted every JSONB / ARRAY / UUID column, FK, and index. (W1's migration was previously only metadata-verified.)
+
+### End-to-end telemetry proof
+New `backend/scripts/integration_smoke.py` drives the full pipeline over HTTP against a live `uvicorn` wired to the container: **heartbeat → inference(fall) → GET /v1/events → acknowledge**. All six steps passed and the `events` row is physically in Postgres (`is_fall=t, severity=high, acked=t`). So every DB path W2 added — the heartbeat upsert, the event INSERT, the paginated timeline query, and the acknowledge UPDATE — is proven end-to-end, not just by construction. The smoke run used the **stub detector** (`FG_MODEL_PATH` pointed at a nonexistent file) for a deterministic fall verdict; the event-write path is identical for the real ONNX model.
+
+### Verified
+Container healthy; `alembic current` = `0001 (head)`; 9 relations in `public`; `integration_smoke.py` exits 0 (six steps PASS); ruff clean; 23/23 backend tests still green. **The persistence layer (W1 + W2) is locked.**
+
+### → Next (queued)
+The per-user personalization seam in `detector.py` (W3): thread each device's `device_calibration` (z-score normalisers + `threshold_override`) into `_model_predict`, falling back to the model's global stats. Then real per-device JWT + pairing-code flow + Postgres RLS.
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._
