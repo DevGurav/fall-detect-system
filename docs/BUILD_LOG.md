@@ -722,4 +722,28 @@ A **continuous-wear simulation** (realistic activity mix + alarm burst-debouncin
 
 ---
 
+## Phase 21 — Week D kickoff: Postgres persistence foundation + schema (2026-06-03)
+
+Week D pivots from model training to backend infrastructure. *Resequencing note: the plan and ARCHITECTURE §9 both had Week D as the Flutter rebuild — I'm pulling the backend persistence/auth work forward first, because the gateway was stateless and the mobile app has nothing to read until it isn't. The Flutter rebuild slides to a later week.* This phase lays the database keystone everything else hangs off.
+
+### The gap
+The Week C gateway served the ONNX detector but kept nothing: `/v1/inference` returned a verdict and forgot it, and `/v1/retraining`'s `RetrainingStore` was a stub that logged the window and dropped it. No users / devices / events existed. Nothing could be persisted, owner-scoped, or personalized — so none of the Week D telemetry or personalization work could land without this first.
+
+### Async SQLAlchemy + Alembic, DSN-gated
+Added `sqlalchemy[asyncio]` + `asyncpg` + `alembic`. `app/db.py` builds an async engine + sessionmaker once on `app.state` — but **only when `FG_DATABASE_URL` is set**; with no DSN the gateway runs DB-less and the persistence layers fall back to stub mode, exactly the way the detector falls back without a model file. That keeps the suite runnable without Postgres (the whole point of the stub philosophy from Phase 15/16).
+
+### The v3 schema — 8 tables
+`app/models.py` models the §2.2 system of record: **identity** (`users`, `emergency_contacts`, `devices`, `pairing_codes`), **ingestion** (`events`, `retraining_samples`), **personalization** (`device_calibration` — per-user channel + feature z-score vectors and a `threshold_override`), **compliance** (`audit_events`). Hand-wrote `alembic/versions/0001` to match (deterministic — there's no live DB in this env to autogenerate against). Two deliberate transitional calls, both consequences of "identity tables now, real auth after": ingestion rows keep the raw §8 `device_ref` string and allow NULL `device_id`/`user_id` until a device is paired, and row-level security (§5) is deferred to the auth slice so enforcing it doesn't lock out the trusted-stub path.
+
+### RetrainingStore: stub → real write
+Flipped `RetrainingStore` from the stub to a real async INSERT into `retraining_samples`, scoping each row to the owning user via a `devices` lookup (NULL when the device isn't paired yet). The route is now `async`; the stub stays as the DB-less fallback. The §8 contract and the `RetrainingAck` response are byte-for-byte unchanged — the one-method swap the Phase 16 seam was built to allow.
+
+### Verified
+`ruff` clean; **15/15** backend tests green DB-less (12 existing + 3 new schema guards); the app constructs at `v0.2.0`; metadata exposes exactly the 8 tables; `alembic history` shows a clean `base → 0001 (head)`. **Not yet applied to a live Postgres** (no engine available here) — `alembic upgrade head` against a Supabase / local DSN is the single command left to stand the schema up.
+
+### → Next (queued)
+Persist confirmed falls on `/v1/inference` (→ `events`), then the device heartbeat + `GET /v1/events` / `GET /v1/devices` + acknowledge read side, then the per-user normalization + threshold seam in the detector (`device_calibration` is already modeled for it). Real per-device JWT + pairing-code flow + Postgres RLS replace the trusted-stub identity seam. *Carried-over flag (still open): the top-level README has stale KFall/SisFall dataset refs vs ADR-006.*
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._
