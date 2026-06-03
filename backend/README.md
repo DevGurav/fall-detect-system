@@ -18,16 +18,19 @@ backend/
 │   ├── schemas.py         Pydantic v2 models = the §8 ingestion contract (payload_type-routed)
 │   ├── db.py              async SQLAlchemy engine/session, DSN-gated (None → DB-less mode)
 │   ├── models.py          SQLAlchemy 2.0 schema = the §2.2 system of record (8 tables)
-│   ├── security.py        identity seam: device→user resolution + trusted-auth stub
+│   ├── auth.py             JWT (user + device) + bcrypt + 8-char pairing codes + deps
+│   ├── security.py        get_device lookup helper (shared by services)
 │   ├── deps.py            request deps (require_db → 503 when DB-less)
-│   ├── routers/           health, inference, retraining, events, devices
+│   ├── routers/           health, auth, inference, retraining, events, devices
 │   └── services/
 │       ├── detector.py          CloudDetector (ONNX; per-user calibration; stub fallback)
 │       ├── calibration_store.py CalibrationStore (per-device profile lookup)
 │       ├── retraining_store.py  RetrainingStore (Postgres write; stub when DB-less)
 │       ├── event_store.py       EventStore (persist confirmed falls + timeline/ack)
-│       └── device_service.py    DeviceService (heartbeat upsert + live status)
-├── alembic/               migrations (versions/0001 = initial schema) + async env.py
+│       ├── device_service.py    DeviceService (heartbeat + live status)
+│       ├── user_service.py      UserService (register/login, bcrypt)
+│       └── pairing_service.py   PairingService (pairing-code create/redeem)
+├── alembic/               migrations (0001 schema · 0002 RLS · 0003 app role) + async env.py
 ├── alembic.ini
 ├── scripts/               integration_smoke.py (end-to-end smoke vs a live DB)
 ├── tests/                 TestClient smoke + contract + telemetry tests + offline guards
@@ -43,14 +46,16 @@ uv run uvicorn app.main:app --reload      # http://127.0.0.1:8000/docs
 uv run pytest                             # smoke + contract + schema tests (no DB needed)
 
 # Persistence is optional for local dev: with no FG_DATABASE_URL the gateway runs
-# DB-less (stub stores). For real persistence, start Postgres and apply migrations:
+# DB-less (stub stores). For real persistence: start Postgres, MIGRATE as the owner,
+# then RUN as the non-superuser fall_app so Postgres RLS actually enforces.
 docker compose up -d --wait                                  # repo root: Postgres 16
 export FG_DATABASE_URL=postgresql+asyncpg://fall:fall@localhost:5432/fall_guardian
-uv run alembic upgrade head
+uv run alembic upgrade head                                  # schema + RLS + the fall_app role
+export FG_DATABASE_URL=postgresql+asyncpg://fall_app:fall_app@localhost:5432/fall_guardian
+uv run uvicorn app.main:app
 
-# End-to-end smoke vs the live DB (heartbeat -> inference -> events -> acknowledge):
-uv run uvicorn app.main:app &                                # in one shell
-uv run python scripts/integration_smoke.py                   # in another
+# End-to-end smoke vs the live DB (register -> pair -> heartbeat -> inference -> events -> ack):
+uv run python scripts/integration_smoke.py
 ```
 
 ## Ingestion routing (`payload_type`)
@@ -84,5 +89,11 @@ The watch tags every uploaded window with `payload_type`:
 - ✅ **Personalization (Week D)**: `/v1/inference` looks up the device's `device_calibration` and applies it
   per request — per-user z-score normalisers + a `threshold_override`, each falling back to the model's global
   stats when absent. Verified end-to-end: a per-device threshold flips the verdict on the same window.
-- ⏭ Next: the fit-at-pairing *write* path for `device_calibration` (normalisers from ADL wear; threshold
-  tuned from canceled false alarms), then real per-device JWT + pairing + Postgres RLS.
+- ✅ **Auth + pairing (Week D)**: per-user access tokens (bcrypt + HS256 JWT) + per-device tokens issued via
+  the 8-char pairing-code flow; ingestion/heartbeat require a device token (body `device_id` must match → 403),
+  reads require a user token — retiring the `X-User-Id` stub.
+- ✅ **Postgres RLS (Week D)**: every user-scoped table has a `FORCE`d policy keyed on a per-transaction
+  `app.user_id` GUC; the gateway connects as the non-superuser `fall_app` (migration 0003) so the policies bind
+  (superusers bypass RLS). Verified: a role with no `app.user_id` set sees **zero** rows.
+- ⏭ Next: the fit-at-pairing *write* path for `device_calibration`, refresh-token rotation, and the
+  Redis-backed rate-limit + SSE caregiver feed.

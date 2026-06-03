@@ -806,4 +806,27 @@ The fit-at-pairing path that *writes* `device_calibration` (z-score normalisers 
 
 ---
 
+## Phase 25 — Week D close-out: the security perimeter — JWT auth, pairing, and Postgres RLS (2026-06-03)
+
+Closes Week D's backend arc. Replaces the trusted-stub identity with real authentication and enforces per-row isolation at the database.
+
+### Authentication + pairing
+Per-user access tokens (bcrypt passwords, HS256 JWTs via PyJWT) from `/v1/auth/register|login`, and per-device tokens issued at pairing. The 8-char Crockford pairing-code lifecycle: a user mints a code (`POST /v1/devices/pairing-codes`), a device redeems it (`POST /v1/devices/pair`) to bind itself and receive its token — codes are single-use, TTL-bounded, and attempt-limited. Every endpoint is gated: a **device** token on `/v1/inference`, `/v1/retraining`, `/v1/devices/heartbeat` (the body `device_id` must match the token → 403, so a device can't post as another); a **user** token on the events + devices read side. This retires the `X-User-Id` stub. The JWT secret has a dev default but the app refuses to boot with it outside local.
+
+### Row-level security — and the superuser trap
+Migration 0002 enables + **FORCE**s RLS on the six user-scoped tables, with policies keyed on a per-transaction `app.user_id` GUC set via `Database.session_for`; `users` and `pairing_codes` stay policy-free so login and redemption work before a user context exists. **What the live proof caught:** the Postgres image's default role is a *superuser*, and superusers bypass RLS even with FORCE — so RLS was decorative until **migration 0003** added a least-privilege `fall_app` role (NOSUPERUSER, CRUD-only). The gateway now connects as `fall_app`; migrations run as the owner. (A genuinely instructive bug: the API isolation tests passed the whole time on the app-layer filter, masking that the DB layer wasn't enforcing — only the direct `psql` count exposed it.)
+
+### Verified end-to-end (live Postgres)
+- **Auth pipeline**: register → pair → authenticated heartbeat / inference → user-scoped events → acknowledge; 401 without a token, 403 on a `device_id` mismatch.
+- **RLS isolation** (app as `fall_app`): two users each see only their own events; A cannot acknowledge B's event (404); and direct `psql` *as fall_app* returns **0 rows with no `app.user_id` set**, and exactly each user's rows with it — unscoped reads eliminated at the DB, not just the app.
+- ruff clean; **39/39** DB-less tests (auth primitives + gating contracts + the suite re-authenticated); migrations `0001 → 0002 → 0003`; `integration_smoke.py` rewritten to the authenticated flow.
+
+### Plan note
+The Indian-ADL data strategy is updated in the plan file: manual physical-hardware collection is **replaced by a Python synthetic telemetry engine** on regional Indian-ADL motion profiles, feeding the personalization loop (see `i-am-3rd-year-dynamic-hamming.md`, Week E).
+
+### → Next (queued)
+The fit-at-pairing *write* path for `device_calibration`; refresh-token rotation; Redis-backed rate-limiting + the SSE caregiver feed; and building the synthetic telemetry engine (Week E).
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._

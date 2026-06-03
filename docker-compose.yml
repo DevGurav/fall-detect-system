@@ -6,9 +6,16 @@
 #
 #   docker compose up -d --wait
 #   cd backend
+#   # migrate as the OWNER (creates schema, RLS policies, and the fall_app role):
 #   $env:FG_DATABASE_URL = "postgresql+asyncpg://fall:fall@localhost:5432/fall_guardian"
 #   uv run alembic upgrade head
+#   # run the gateway as the NON-SUPERUSER fall_app so RLS actually enforces:
+#   $env:FG_DATABASE_URL = "postgresql+asyncpg://fall_app:fall_app@localhost:5432/fall_guardian"
 #   uv run uvicorn app.main:app
+#
+# `fall` (POSTGRES_USER) is a superuser → table owner + migrations only. Migration
+# 0003 creates the least-privilege `fall_app` the app connects as; superusers bypass
+# RLS, so the app MUST use fall_app for the policies to bind.
 #
 # Tear down (keep data):   docker compose down
 # Tear down (wipe data):   docker compose down -v
