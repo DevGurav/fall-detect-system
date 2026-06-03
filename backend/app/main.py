@@ -15,6 +15,7 @@ from app import __version__
 from app.config import get_settings
 from app.db import Database
 from app.routers import devices, events, health, inference, retraining
+from app.services.calibration_store import CalibrationStore
 from app.services.detector import CloudDetector
 from app.services.device_service import DeviceService
 from app.services.event_store import EventStore
@@ -27,6 +28,7 @@ async def _lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.db = Database.from_settings(settings)  # None when no DSN (DB-less mode)
     app.state.detector = CloudDetector(settings)  # built once, reused
+    app.state.calibration_store = CalibrationStore(settings, app.state.db)
     app.state.retraining_store = RetrainingStore(settings, app.state.db)
     app.state.event_store = EventStore(settings, app.state.db)
     app.state.device_service = DeviceService(settings, app.state.db)

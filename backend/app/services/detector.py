@@ -13,6 +13,12 @@ fused inputs — the raw 125×6 window and the 43-d engineered feature vector
 (`services/features.py`, computed identically to training) — and emits a fall
 logit + a (standardized) severity scalar.
 
+Per-user **calibration** (ARCHITECTURE §4.6, §3.2) is applied per request when a
+`CalibrationProfile` is supplied: the device's own z-score normalisers replace the
+model's global channel/feature stats, and a `threshold_override` replaces the
+global decision threshold. Each field falls back independently to the values in
+`cloud_detector.meta.json` when absent, so an uncalibrated device behaves as before.
+
 If the model artifact is absent, the detector falls back to **stub mode**: a
 transparent peak-acceleration heuristic, so the backend stays end-to-end testable
 without the model file. Responses always carry `model_version` so a stub
@@ -22,6 +28,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -37,6 +44,21 @@ _DEFAULT_MODEL_PATH = _MODEL_DIR / "cloud_detector.onnx"
 # Stub heuristic thresholds (matches the ML pipeline's fall sanity threshold).
 _IMPACT_MS2 = 20.0
 _HIGH_MS2 = 30.0
+
+
+@dataclass(frozen=True)
+class CalibrationProfile:
+    """Per-device personalization, sourced from the `device_calibration` row.
+
+    Any field may be None — each is applied independently and falls back to the
+    model's global stats / threshold when absent (ARCHITECTURE §4.6, §3.2).
+    """
+
+    channel_mean: list[float] | None = None
+    channel_std: list[float] | None = None
+    feature_mean: list[float] | None = None
+    feature_std: list[float] | None = None
+    threshold_override: float | None = None
 
 
 class CloudDetector:
@@ -68,26 +90,32 @@ class CloudDetector:
     def model_version(self) -> str:
         return self._meta["model_version"] if self._meta else self.settings.model_version
 
-    def predict(self, req: InferenceRequest) -> InferenceResponse:
+    def predict(
+        self, req: InferenceRequest, profile: CalibrationProfile | None = None
+    ) -> InferenceResponse:
         if self._session is None:
-            return self._stub_predict(req)
-        return self._model_predict(req)
+            return self._stub_predict(req)  # heuristic fallback; no personalization
+        return self._model_predict(req, profile)
 
     # ─── Real model (ONNX) ───────────────────────────────────────────────────
 
-    def _model_predict(self, req: InferenceRequest) -> InferenceResponse:
+    def _model_predict(
+        self, req: InferenceRequest, profile: CalibrationProfile | None
+    ) -> InferenceResponse:
         meta = self._meta
         window = np.array(
             [[s.ax, s.ay, s.az, s.wx, s.wy, s.wz] for s in req.samples], dtype=np.float32
         )  # (125, 6) — schema guarantees exactly 125 samples
 
-        raw = self._standardize(window, meta["channel_stats"])[None, :, :]          # (1, 125, 6)
+        # Per-user z-score normalisers + decision threshold, each falling back to
+        # the model's global stats when this device has no (or partial) calibration.
+        raw = self._standardize(window, self._channel_stats(profile))[None, :, :]    # (1, 125, 6)
         feats = extract_features(window, sample_rate=req.sample_rate_hz)
-        feat = self._standardize(feats, meta["feature_norm"])[None, :]              # (1, 43)
+        feat = self._standardize(feats, self._feature_norm(profile))[None, :]        # (1, 43)
 
         logit, severity_std = self._session.run(None, {"raw": raw, "feats": feat})
         prob = self._calibrated_prob(float(logit[0]))
-        is_fall = prob >= float(meta["threshold"])
+        is_fall = prob >= self._threshold(profile)
         peak_ms2 = float(severity_std[0]) * meta["severity_scaler"]["std"] + meta["severity_scaler"]["mean"]
 
         return InferenceResponse(
@@ -97,6 +125,33 @@ class CloudDetector:
             action="alert_caregiver" if is_fall else "suppress",
             lead_time_ms=None,
             model_version=meta["model_version"],
+        )
+
+    # ─── Per-user calibration (each field falls back to the global stats) ────
+
+    def _channel_stats(self, profile: CalibrationProfile | None) -> dict:
+        if profile and self._valid(profile.channel_mean, profile.channel_std, self._meta["n_channels"]):
+            return {"mean": profile.channel_mean, "std": profile.channel_std}
+        return self._meta["channel_stats"]
+
+    def _feature_norm(self, profile: CalibrationProfile | None) -> dict:
+        if profile and self._valid(profile.feature_mean, profile.feature_std, self._meta["n_features"]):
+            return {"mean": profile.feature_mean, "std": profile.feature_std}
+        return self._meta["feature_norm"]
+
+    def _threshold(self, profile: CalibrationProfile | None) -> float:
+        if profile and profile.threshold_override is not None:
+            return float(profile.threshold_override)
+        return float(self._meta["threshold"])
+
+    @staticmethod
+    def _valid(mean: list[float] | None, std: list[float] | None, expected_len: int) -> bool:
+        """A per-user normaliser is usable only if both vectors are the right length."""
+        return (
+            mean is not None
+            and std is not None
+            and len(mean) == expected_len
+            and len(std) == expected_len
         )
 
     @staticmethod
