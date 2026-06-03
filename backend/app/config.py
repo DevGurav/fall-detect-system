@@ -14,18 +14,29 @@ class Settings(BaseSettings):
     window_samples: int = 125          # 2.5 s @ 50 Hz
     sample_rate_hz: int = 50
 
-    # Cloud detection model. Until the Week-C Transformer is trained + exported,
-    # the detector runs in stub mode (see services/detector.py).
+    # Cloud detection model. Served from the exported ONNX artifact by default
+    # (app/model/cloud_detector.onnx); `model_version` is only the fallback label
+    # the stub reports when no artifact is present (see services/detector.py).
     model_path: str | None = None
     model_version: str = "stub-0.0"
 
     # Confidence threshold above which the cloud CONFIRMS a fall.
     fall_confidence_threshold: float = 0.5
 
-    # Datastore for canceled-false-alarm windows uploaded during the grace period.
-    # Until MLOps persistence lands, the store runs in stub mode (see
-    # services/retraining_store.py). Set to a Postgres DSN to enable real writes.
+    # PostgreSQL system of record (users, devices, events, retraining_samples,
+    # calibration, audit — ARCHITECTURE §2.2). Async DSN, e.g.
+    #   postgresql+asyncpg://user:pass@host:5432/fall_guardian
+    # When unset, the gateway runs DB-less and the persistence layers fall back to
+    # stub mode (mirrors the detector), so the service stays testable without a DB.
+    database_url: str | None = None
+
+    # Deprecated alias for `database_url`; kept so existing FG_RETRAINING_DB_DSN
+    # environments keep working. Prefer FG_DATABASE_URL.
     retraining_db_dsn: str | None = None
+
+    @property
+    def resolved_database_url(self) -> str | None:
+        return self.database_url or self.retraining_db_dsn
 
 
 def get_settings() -> Settings:
