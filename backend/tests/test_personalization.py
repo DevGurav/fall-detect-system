@@ -10,6 +10,7 @@ model's global stats, and that the lookup store is a no-op without a database.
 from __future__ import annotations
 
 import asyncio
+from uuid import uuid4
 
 import pytest
 
@@ -78,4 +79,4 @@ def test_feature_norm_falls_back_when_partial(detector):
 def test_calibration_store_returns_none_without_db():
     store = CalibrationStore(get_settings(), None)
     assert store.is_stub is True
-    assert asyncio.run(store.get("any-device")) is None
+    assert asyncio.run(store.get("any-device", uuid4())) is None

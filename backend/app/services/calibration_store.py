@@ -2,15 +2,16 @@
 
 Reads the `device_calibration` row for a request's §8 `device_id` (joined through
 `devices`) and returns a `CalibrationProfile` for the detector to apply: per-user
-z-score normalisers + a threshold override (ARCHITECTURE §4.6, §3.2). Returns None
-when DB-less, or when the device is unpaired / has no calibration yet — so the
-detector falls back to the model's global stats. The fit-at-pairing *write* path
-is a later slice; this is read-only. (A Redis cache in front of this is a likely
-follow-up, since it runs on every emergency window.)
+z-score normalisers + a threshold override (ARCHITECTURE §4.6, §3.2). Runs in a
+`session_for(user_id)` so RLS only exposes the calling device's own calibration.
+Returns None when DB-less, or when the device is unpaired / has no calibration yet
+— so the detector falls back to the model's global stats. The fit-at-pairing
+*write* path is a later slice; this is read-only.
 """
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from sqlalchemy import select
 
@@ -31,11 +32,11 @@ class CalibrationStore:
     def is_stub(self) -> bool:
         return self._db is None
 
-    async def get(self, device_id: str) -> CalibrationProfile | None:
+    async def get(self, device_id: str, user_id: UUID) -> CalibrationProfile | None:
         """The device's calibration, or None (DB-less / unpaired / uncalibrated)."""
         if self._db is None:
             return None
-        async with self._db.sessionmaker() as session:
+        async with self._db.session_for(user_id) as session:
             row = (
                 await session.execute(
                     select(DeviceCalibration)

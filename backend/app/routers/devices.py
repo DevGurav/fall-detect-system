@@ -62,12 +62,16 @@ async def heartbeat(
             status.HTTP_403_FORBIDDEN, "device_id does not match the authenticated device"
         )
     require_db(request)
-    return await request.app.state.device_service.heartbeat(
+    result = await request.app.state.device_service.heartbeat(
         device_id=device.device_id,
+        user_id=device.user_id,
         battery_pct=req.battery_pct,
         signal_dbm=req.signal_dbm,
         edge_model_version=req.edge_model_version,
     )
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "device is not paired to this account")
+    return result
 
 
 @router.get("", response_model=list[DeviceOut])

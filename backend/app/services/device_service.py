@@ -1,10 +1,11 @@
-"""Device service — heartbeat upserts and the device-status read side.
+"""Device service — heartbeat updates and the device-status read side.
 
-`heartbeat` records battery / signal / last-seen for a watch (ARCHITECTURE §2.1),
-creating the `devices` row on first contact — pairing (associating a device to a
-user) is the auth slice; until then a device registers unowned. `list_devices`
-returns live status with online/offline derived from `last_seen_at`, so it stays
-truthful without a background sweeper flipping a stored flag.
+`heartbeat` records battery / signal / last-seen for an already-paired device
+(ARCHITECTURE §2.1); the row is created at pairing, so an unknown device returns
+None → 404 (no more unauthenticated auto-registration). `list_devices` returns
+live status with online/offline derived from `last_seen_at`, so it stays truthful
+without a background sweeper. Both run in a `session_for(user_id)` so Postgres RLS
+isolates rows to the caller.
 """
 from __future__ import annotations
 
@@ -56,19 +57,17 @@ class DeviceService:
         self,
         *,
         device_id: str,
+        user_id: UUID,
         battery_pct: int | None,
         signal_dbm: int | None,
         edge_model_version: str | None = None,
-    ) -> DeviceOut:
-        """Update (or, on first contact, register) a device's live status."""
+    ) -> DeviceOut | None:
+        """Update a paired device's live status; None if the caller has no such device."""
         now = datetime.now(tz=timezone.utc)
-        async with self._db.sessionmaker() as session:
+        async with self._db.session_for(user_id) as session:
             device = await get_device(session, device_id)
             if device is None:
-                # First contact: register the device, unowned until pairing.
-                # Production hardens this behind a device JWT + an ON CONFLICT upsert.
-                device = Device(device_id=device_id)
-                session.add(device)
+                return None  # not paired to this user (RLS-scoped lookup) -> 404
             device.last_seen_at = now
             device.status = "online"
             if battery_pct is not None:
@@ -77,15 +76,13 @@ class DeviceService:
                 device.signal_dbm = signal_dbm
             if edge_model_version is not None:
                 device.edge_model_version = edge_model_version
+            out = self._to_out(device, now)  # build before commit (GUC is txn-local)
             await session.commit()
-            await session.refresh(device)
-            return self._to_out(device, now)
+            return out
 
-    async def list_devices(self, *, user_id: UUID | None) -> list[DeviceOut]:
+    async def list_devices(self, *, user_id: UUID) -> list[DeviceOut]:
         now = datetime.now(tz=timezone.utc)
-        async with self._db.sessionmaker() as session:
-            stmt = select(Device).order_by(Device.created_at.desc())
-            if user_id is not None:
-                stmt = stmt.where(Device.user_id == user_id)
+        async with self._db.session_for(user_id) as session:
+            stmt = select(Device).where(Device.user_id == user_id).order_by(Device.created_at.desc())
             devices = (await session.execute(stmt)).scalars().all()
             return [self._to_out(d, now) for d in devices]

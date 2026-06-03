@@ -22,4 +22,6 @@ async def retraining(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "device_id does not match the authenticated device"
         )
-    return await request.app.state.retraining_store.store(req)
+    return await request.app.state.retraining_store.store(
+        req, user_id=device.user_id, device_pk=device.device_pk
+    )

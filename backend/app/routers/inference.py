@@ -24,8 +24,10 @@ async def inference(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "device_id does not match the authenticated device"
         )
-    profile = await request.app.state.calibration_store.get(req.device_id)
+    profile = await request.app.state.calibration_store.get(req.device_id, device.user_id)
     verdict = request.app.state.detector.predict(req, profile)
     if verdict.is_fall:
-        await request.app.state.event_store.record_fall(req, verdict)
+        await request.app.state.event_store.record_fall(
+            req, verdict, user_id=device.user_id, device_pk=device.device_pk
+        )
     return verdict

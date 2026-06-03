@@ -1,10 +1,13 @@
 """Event store — persist confirmed falls and serve the caregiver timeline.
 
 When the `CloudDetector` confirms a fall on /v1/inference, the verdict is written
-to the `events` table (ARCHITECTURE §3.2), scoped to the owning device + user when
-the device is paired. DB-less, `record_fall` is a no-op so /v1/inference still
-returns its verdict without persistence. The read side (`list_events`,
-`acknowledge`) backs GET /v1/events and POST /v1/events/{id}/acknowledge.
+to the `events` table (ARCHITECTURE §3.2), scoped to the authenticated device's
+owner. DB-less, `record_fall` is a no-op so /v1/inference still returns its verdict
+without persistence. The read side (`list_events`, `acknowledge`) backs GET
+/v1/events and POST /v1/events/{id}/acknowledge.
+
+Every DB call runs in a `session_for(user_id)` so Postgres RLS isolates rows to the
+caller; the explicit `user_id` filters below are kept as belt-and-suspenders.
 """
 from __future__ import annotations
 
@@ -18,7 +21,6 @@ from sqlalchemy import func, select
 from app.config import Settings
 from app.models import Event
 from app.schemas import EventOut, EventPage, InferenceRequest, InferenceResponse
-from app.security import get_device
 
 if TYPE_CHECKING:
     from app.db import Database
@@ -35,19 +37,20 @@ class EventStore:
     def is_stub(self) -> bool:
         return self._db is None
 
-    async def record_fall(self, req: InferenceRequest, verdict: InferenceResponse) -> UUID | None:
+    async def record_fall(
+        self, req: InferenceRequest, verdict: InferenceResponse, *, user_id: UUID, device_pk: UUID
+    ) -> UUID | None:
         """Persist a confirmed fall to `events`. No-op (returns None) when DB-less."""
         if self._db is None:
             return None
         event_id = uuid4()
-        async with self._db.sessionmaker() as session:
-            device = await get_device(session, req.device_id)
+        async with self._db.session_for(user_id) as session:
             session.add(
                 Event(
                     id=event_id,
                     device_ref=req.device_id,
-                    device_id=device.id if device else None,
-                    user_id=device.user_id if device else None,
+                    device_id=device_pk,
+                    user_id=user_id,
                     ts_start_unix_ms=req.ts_start_unix_ms,
                     is_fall=verdict.is_fall,
                     confidence=verdict.confidence,
@@ -67,15 +70,12 @@ class EventStore:
         return event_id
 
     async def list_events(
-        self, *, user_id: UUID | None, device_id: str | None, limit: int, offset: int
+        self, *, user_id: UUID, device_id: str | None, limit: int, offset: int
     ) -> EventPage:
-        """A page of the fall timeline, newest first, optionally scoped/filtered."""
-        async with self._db.sessionmaker() as session:
-            rows = select(Event)
-            count = select(func.count()).select_from(Event)
-            if user_id is not None:
-                rows = rows.where(Event.user_id == user_id)
-                count = count.where(Event.user_id == user_id)
+        """A page of the caller's fall timeline, newest first, optionally filtered."""
+        async with self._db.session_for(user_id) as session:
+            rows = select(Event).where(Event.user_id == user_id)
+            count = select(func.count()).select_from(Event).where(Event.user_id == user_id)
             if device_id is not None:
                 rows = rows.where(Event.device_ref == device_id)
                 count = count.where(Event.device_ref == device_id)
@@ -86,16 +86,14 @@ class EventStore:
             items = [EventOut.model_validate(e) for e in result.scalars().all()]
         return EventPage(items=items, total=total, limit=limit, offset=offset)
 
-    async def acknowledge(self, *, event_id: UUID, user_id: UUID | None) -> EventOut | None:
-        """Mark an event acknowledged. None if it doesn't exist / isn't the caller's."""
-        async with self._db.sessionmaker() as session:
-            event = await session.get(Event, event_id)
-            if event is None:
+    async def acknowledge(self, *, event_id: UUID, user_id: UUID) -> EventOut | None:
+        """Mark the caller's event acknowledged. None if it isn't theirs / absent."""
+        async with self._db.session_for(user_id) as session:
+            event = await session.get(Event, event_id)  # RLS already scopes to the caller
+            if event is None or (event.user_id is not None and event.user_id != user_id):
                 return None
-            if user_id is not None and event.user_id is not None and event.user_id != user_id:
-                return None  # not the caller's event — 404 rather than leak its existence
             event.acknowledged_at = datetime.now(tz=timezone.utc)
             event.acked_by = user_id
+            out = EventOut.model_validate(event)  # build before commit (GUC is txn-local)
             await session.commit()
-            await session.refresh(event)
-            return EventOut.model_validate(event)
+            return out

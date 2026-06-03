@@ -5,21 +5,20 @@ user presses Cancel, that 2.5 s window was a FALSE ALARM. The watch uploads it
 here — NOT for detection, but as labeled data for future fine-tuning and per-user
 threshold tuning. So this path deliberately bypasses the `CloudDetector`.
 
-When a database is configured the window is written to the `retraining_samples`
-table (scoped to the owning device + user when the device is paired). With no DB
-the store runs in **stub mode** — it logs and acks with a generated id, so the
-ingestion path stays end-to-end testable without Postgres. Mirrors the detector.
+When a database is configured the window is written to `retraining_samples`, scoped
+(via `session_for`) to the authenticated device's owner so Postgres RLS isolates
+it. With no DB the store runs in **stub mode** — it logs and acks with a generated
+id, so the ingestion path stays end-to-end testable without Postgres.
 """
 from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.config import Settings
 from app.models import CANCELED_FALSE_ALARM, RetrainingSample
 from app.schemas import RetrainingAck, RetrainingRequest
-from app.security import get_device
 
 if TYPE_CHECKING:
     from app.db import Database
@@ -36,23 +35,26 @@ class RetrainingStore:
     def is_stub(self) -> bool:
         return self._db is None
 
-    async def store(self, req: RetrainingRequest) -> RetrainingAck:
+    async def store(
+        self, req: RetrainingRequest, *, user_id: UUID, device_pk: UUID
+    ) -> RetrainingAck:
         if self._db is None:
             return self._stub_store(req)
-        return await self._persist(req)
+        return await self._persist(req, user_id=user_id, device_pk=device_pk)
 
-    async def _persist(self, req: RetrainingRequest) -> RetrainingAck:
+    async def _persist(
+        self, req: RetrainingRequest, *, user_id: UUID, device_pk: UUID
+    ) -> RetrainingAck:
         """Write the canceled window to `retraining_samples`, scoped to its owner."""
         sample_id = uuid4()
         edge = req.edge_prediction
-        async with self._db.sessionmaker() as session:
-            device = await get_device(session, req.device_id)
+        async with self._db.session_for(user_id) as session:
             session.add(
                 RetrainingSample(
                     id=sample_id,
                     device_ref=req.device_id,
-                    device_id=device.id if device else None,
-                    user_id=device.user_id if device else None,
+                    device_id=device_pk,
+                    user_id=user_id,
                     ts_start_unix_ms=req.ts_start_unix_ms,
                     sample_rate_hz=req.sample_rate_hz,
                     window=[s.model_dump() for s in req.samples],
@@ -62,12 +64,7 @@ class RetrainingStore:
                 )
             )
             await session.commit()
-        logger.info(
-            "retraining sample %s persisted: device=%s paired=%s",
-            sample_id.hex,
-            req.device_id,
-            device is not None,
-        )
+        logger.info("retraining sample %s persisted: device=%s", sample_id.hex, req.device_id)
         return RetrainingAck(
             stored=True,
             label=CANCELED_FALSE_ALARM,
