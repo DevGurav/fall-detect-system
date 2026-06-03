@@ -12,6 +12,7 @@ from fastapi import FastAPI
 
 from app import __version__
 from app.config import get_settings
+from app.db import Database
 from app.routers import health, inference, retraining
 from app.services.detector import CloudDetector
 from app.services.retraining_store import RetrainingStore
@@ -21,10 +22,12 @@ from app.services.retraining_store import RetrainingStore
 async def _lifespan(app: FastAPI):
     settings = get_settings()
     app.state.settings = settings
+    app.state.db = Database.from_settings(settings)  # None when no DSN (DB-less mode)
     app.state.detector = CloudDetector(settings)  # built once, reused
-    app.state.retraining_store = RetrainingStore(settings)  # built once, reused
+    app.state.retraining_store = RetrainingStore(settings, app.state.db)  # built once, reused
     yield
-    # (nothing to tear down yet — model handles are GC'd)
+    if app.state.db is not None:
+        await app.state.db.dispose()
 
 
 def create_app() -> FastAPI:

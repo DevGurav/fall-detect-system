@@ -15,6 +15,6 @@ router = APIRouter(prefix="/v1", tags=["retraining"])
 
 
 @router.post("/retraining", response_model=RetrainingAck)
-def retraining(req: RetrainingRequest, request: Request) -> RetrainingAck:
+async def retraining(req: RetrainingRequest, request: Request) -> RetrainingAck:
     store = request.app.state.retraining_store
-    return store.store(req)
+    return await store.store(req)
