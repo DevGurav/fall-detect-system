@@ -6,9 +6,9 @@ here — NOT for detection, but as labeled data for future fine-tuning and per-u
 threshold tuning. So this path deliberately bypasses the `CloudDetector`.
 
 When a database is configured the window is written to the `retraining_samples`
-table (scoped to the owning user when the device is paired). With no DB the store
-runs in **stub mode** — it logs and acks with a generated id, so the ingestion
-path stays end-to-end testable without Postgres. Mirrors the `CloudDetector` stub.
+table (scoped to the owning device + user when the device is paired). With no DB
+the store runs in **stub mode** — it logs and acks with a generated id, so the
+ingestion path stays end-to-end testable without Postgres. Mirrors the detector.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from uuid import uuid4
 from app.config import Settings
 from app.models import CANCELED_FALSE_ALARM, RetrainingSample
 from app.schemas import RetrainingAck, RetrainingRequest
-from app.security import resolve_user_id_for_device
+from app.security import get_device
 
 if TYPE_CHECKING:
     from app.db import Database
@@ -46,12 +46,13 @@ class RetrainingStore:
         sample_id = uuid4()
         edge = req.edge_prediction
         async with self._db.sessionmaker() as session:
-            user_id = await resolve_user_id_for_device(session, req.device_id)
+            device = await get_device(session, req.device_id)
             session.add(
                 RetrainingSample(
                     id=sample_id,
                     device_ref=req.device_id,
-                    user_id=user_id,
+                    device_id=device.id if device else None,
+                    user_id=device.user_id if device else None,
                     ts_start_unix_ms=req.ts_start_unix_ms,
                     sample_rate_hz=req.sample_rate_hz,
                     window=[s.model_dump() for s in req.samples],
@@ -62,10 +63,10 @@ class RetrainingStore:
             )
             await session.commit()
         logger.info(
-            "retraining sample %s persisted: device=%s user=%s",
+            "retraining sample %s persisted: device=%s paired=%s",
             sample_id.hex,
             req.device_id,
-            user_id,
+            device is not None,
         )
         return RetrainingAck(
             stored=True,

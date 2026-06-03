@@ -8,10 +8,12 @@ deliberate fix for v1/v2, which accepted unvalidated input with silent
 """
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Literal
+from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 WINDOW_SAMPLES = 125  # 2.5 s @ 50 Hz — the locked window length
 
@@ -124,3 +126,58 @@ class HealthResponse(BaseModel):
     version: str
     model_version: str
     environment: str
+
+
+# ─── Telemetry: device heartbeat + read-side views (W2) ──────────────────────
+
+
+class HeartbeatRequest(BaseModel):
+    """A periodic device status ping (ARCHITECTURE §2.1 — watch sends ~every 5 min)."""
+
+    device_id: str = Field(min_length=1)
+    battery_pct: int | None = Field(default=None, ge=0, le=100)
+    signal_dbm: int | None = None
+    edge_model_version: str | None = None
+
+
+class DeviceOut(BaseModel):
+    """A device's live status. `status` is derived from `last_seen_at` at read time."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    device_id: str
+    status: str                       # online | offline | unknown (derived)
+    battery_pct: int | None
+    signal_dbm: int | None
+    last_seen_at: datetime | None
+    paired_at: datetime | None
+    edge_model_version: str | None
+    created_at: datetime
+
+
+class EventOut(BaseModel):
+    """A persisted fall verdict, as returned on the caregiver timeline."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    device_ref: str
+    ts_start_unix_ms: int
+    is_fall: bool
+    confidence: float
+    severity: Severity
+    lead_time_ms: float | None
+    model_version: str
+    acknowledged_at: datetime | None
+    acked_by: UUID | None
+    created_at: datetime
+
+
+class EventPage(BaseModel):
+    """A page of the fall-event timeline (newest first)."""
+
+    items: list[EventOut]
+    total: int
+    limit: int
+    offset: int

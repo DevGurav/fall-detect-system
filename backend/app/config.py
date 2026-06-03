@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # Confidence threshold above which the cloud CONFIRMS a fall.
     fall_confidence_threshold: float = 0.5
 
+    # A device is reported "offline" if its last heartbeat is older than this.
+    # ARCHITECTURE §2.1 sends a heartbeat ~every 5 min, so the default is 2× that.
+    device_offline_after_s: int = 600
+
     # PostgreSQL system of record (users, devices, events, retraining_samples,
     # calibration, audit — ARCHITECTURE §2.2). Async DSN, e.g.
     #   postgresql+asyncpg://user:pass@host:5432/fall_guardian
