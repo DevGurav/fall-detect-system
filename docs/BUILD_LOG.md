@@ -746,4 +746,28 @@ Persist confirmed falls on `/v1/inference` (→ `events`), then the device heart
 
 ---
 
+## Phase 22 — Week D: the gateway goes stateful — event persistence + telemetry read side (2026-06-03)
+
+With the schema in place (Phase 21), this phase wires the endpoints to it: the gateway now records what it decides and exposes it to caregivers.
+
+### Confirmed falls are persisted
+`/v1/inference` is now async; on a **confirmed** fall the verdict is written to `events` via a new `EventStore`, scoped to the owning device + user through a `get_device` lookup (null owner until pairing). DB-less, `record_fall` is a no-op and the verdict is still returned — the ingestion path never depends on persistence. Closes the §3.2 gap where a confirmed fall evaporated after the HTTP response.
+
+### Device telemetry
+New `POST /v1/devices/heartbeat` (`DeviceService`) records battery / signal / `last_seen_at`, registering the `devices` row on first contact (unowned until pairing; production hardens this behind a device JWT + an `ON CONFLICT` upsert). `GET /v1/devices` returns live status with online/offline **derived from `last_seen_at`** (`device_offline_after_s`, default 600 s = 2× the 5-min heartbeat) — truthful without a background sweeper flipping a stored flag.
+
+### Read side for caregivers
+`GET /v1/events` — paginated timeline (`limit`/`offset`, newest first, optional `device_id` filter, `total` count). `POST /v1/events/{id}/acknowledge` — sets `acknowledged_at` + `acked_by` (404 if missing or not the caller's). Both gate to **503** in DB-less mode via a new `require_db` dependency; results scope to the caller when an identity is supplied (the `X-User-Id` stub today, per-user JWT + RLS later) and are unscoped otherwise (transitional single-tenant dev view).
+
+### Tidy-up
+Unified device resolution on `get_device` (retraining now also populates `device_id`); `get_current_user` delegates to a new `optional_current_user`.
+
+### Verified
+`ruff` clean; **23/23** backend tests green (8 new: 503 contracts for all four DB-backed routes, `/v1/inference` still serving DB-less, the heartbeat schema bound, and a derived-status unit). All 7 routes register. **The DB-backed paths — inserts, the timeline query, acknowledge, the heartbeat upsert — were NOT run against a live Postgres** (no engine in this env); verified by construction + offline contracts. `FG_DATABASE_URL` + `alembic upgrade head` + a heartbeat → inference → events curl loop is the end-to-end check.
+
+### → Next (queued)
+The personalization seam in the detector: thread each device's `device_calibration` (per-user z-score normalisers + `threshold_override`) into `_model_predict`, falling back to the model's global stats when absent. Then real per-device JWT + pairing-code flow + Postgres RLS to replace the trusted-stub identity and the unscoped dev views.
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._
