@@ -11,6 +11,7 @@
 #   uv run alembic upgrade head
 #   # run the gateway as the NON-SUPERUSER fall_app so RLS actually enforces:
 #   $env:FG_DATABASE_URL = "postgresql+asyncpg://fall_app:fall_app@localhost:5432/fall_guardian"
+#   $env:FG_REDIS_URL = "redis://localhost:6379/0"   # enables rate limiting
 #   uv run uvicorn app.main:app
 #
 # `fall` (POSTGRES_USER) is a superuser → table owner + migrations only. Migration
@@ -35,6 +36,17 @@ services:
       test: ["CMD-SHELL", "pg_isready -U fall -d fall_guardian"]
       interval: 5s
       timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    container_name: fall-guardian-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
       retries: 12
 
 volumes:

@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from app import __version__
 from app.config import get_settings
 from app.db import Database
+from app.ratelimit import RateLimiter
 from app.routers import auth, devices, events, health, inference, retraining
 from app.services.calibration_store import CalibrationStore
 from app.services.detector import CloudDetector
@@ -29,6 +30,13 @@ async def _lifespan(app: FastAPI):
     settings = get_settings()
     app.state.settings = settings
     app.state.db = Database.from_settings(settings)  # None when no DSN (DB-less mode)
+    redis = None
+    if settings.redis_url:
+        from redis.asyncio import from_url
+
+        redis = from_url(settings.redis_url, decode_responses=True)
+    app.state.redis = redis  # None when no FG_REDIS_URL (rate limiting becomes a no-op)
+    app.state.rate_limiter = RateLimiter(redis)
     app.state.detector = CloudDetector(settings)  # built once, reused
     app.state.calibration_store = CalibrationStore(settings, app.state.db)
     app.state.retraining_store = RetrainingStore(settings, app.state.db)
@@ -39,6 +47,8 @@ async def _lifespan(app: FastAPI):
     yield
     if app.state.db is not None:
         await app.state.db.dispose()
+    if app.state.redis is not None:
+        await app.state.redis.aclose()
 
 
 def create_app() -> FastAPI:

@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # environments keep working. Prefer FG_DATABASE_URL.
     retraining_db_dsn: str | None = None
 
+    # Redis (rate limiting now; SSE pub/sub later). When unset, rate limiting is a
+    # no-op — dev + tests run without Redis, mirroring the DB gate.
+    redis_url: str | None = None
+
     @property
     def resolved_database_url(self) -> str | None:
         return self.database_url or self.retraining_db_dsn

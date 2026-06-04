@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.auth import DeviceIdentity, create_device_token, get_current_device, get_current_user
 from app.deps import require_db
+from app.ratelimit import rate_limit
 from app.schemas import (
     DeviceOut,
     HeartbeatRequest,
@@ -26,7 +27,10 @@ router = APIRouter(prefix="/v1/devices", tags=["devices"])
 
 
 @router.post(
-    "/pairing-codes", response_model=PairingCodeResponse, status_code=status.HTTP_201_CREATED
+    "/pairing-codes",
+    response_model=PairingCodeResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit("pairing_codes", 20, 3600))],
 )
 async def create_pairing_code(
     request: Request, user_id: UUID = Depends(get_current_user)
@@ -36,7 +40,11 @@ async def create_pairing_code(
     return PairingCodeResponse(code=code, expires_at=expires_at)
 
 
-@router.post("/pair", response_model=PairResponse)
+@router.post(
+    "/pair",
+    response_model=PairResponse,
+    dependencies=[Depends(rate_limit("pair", 10, 3600))],
+)
 async def pair(req: PairRequest, request: Request) -> PairResponse:
     require_db(request)
     identity = await request.app.state.pairing_service.redeem(req.code, req.device_id)

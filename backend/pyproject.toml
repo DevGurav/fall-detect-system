@@ -22,6 +22,8 @@ dependencies = [
     # Auth: HS256 JWTs + bcrypt password hashing.
     "pyjwt>=2.9",
     "bcrypt>=4.2",
+    # Redis: rate limiting (+ later SSE pub/sub for the caregiver feed).
+    "redis>=5.0",
 ]
 
 [project.optional-dependencies]
