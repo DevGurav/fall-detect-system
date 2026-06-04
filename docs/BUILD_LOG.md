@@ -829,4 +829,25 @@ The fit-at-pairing *write* path for `device_calibration`; refresh-token rotation
 
 ---
 
+## Phase 26 — Redis rate-limiting on the public auth + pairing surface (2026-06-04)
+
+A backend stretch goal: blunt brute force on the routes an attacker can hit without credentials.
+
+### Redis, gated like the DB
+Added a `redis` service to docker-compose (Redis 7) and the `redis` dependency. `app/ratelimit.py` holds a `RateLimiter` built once on `app.state` from `FG_REDIS_URL`; with no URL it's a **no-op**, so dev and the test suite run without Redis (mirroring the DB gate). The client is disposed on shutdown alongside the DB engine.
+
+### Fixed-window limiter
+`RateLimiter.hit(request, scope, limit, window_s)` is a Redis `INCR` + `EXPIRE` keyed by `(scope, client IP)`: the first hit sets the TTL, and once the count exceeds the limit the request gets a `429` with `Retry-After`. `rate_limit(scope, limit, window)` is a dependency factory dropped into a route's `dependencies=[...]`. Applied to `/v1/auth/register` + `/v1/auth/login` (10/min per IP), `/v1/devices/pair` (10/hr — the pairing-code brute-force target, §5), and `/v1/devices/pairing-codes` (20/hr).
+
+### Verified
+ruff clean; **42/42** DB-less tests (3 new: a fake-Redis unit proves allow-up-to-limit-then-429, per-IP isolation, and the no-Redis no-op). **Live against real Redis**: 12 rapid `/v1/auth/login` attempts from one IP returned `401` (bad creds) for the first 10, then **`429`** for the 11th and 12th — the limiter fired exactly at the window limit.
+
+### Housekeeping
+The personal planning doc copy `docs/i-am-3rd-year-dynamic-hamming.md` is now git-ignored (kept on disk, untracked) per request.
+
+### → Next (queued)
+Phase 27 — the SSE caregiver feed (broadcast a confirmed fall to connected caregivers via Redis pub/sub). Then Phase 28 (Week E) Flutter rebuild against this backend, and Phase 29 (Week F) the synthetic Indian-ADL telemetry engine.
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._

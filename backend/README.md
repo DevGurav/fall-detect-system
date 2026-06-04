@@ -21,6 +21,7 @@ backend/
 │   ├── auth.py             JWT (user + device) + bcrypt + 8-char pairing codes + deps
 │   ├── security.py        get_device lookup helper (shared by services)
 │   ├── deps.py            request deps (require_db → 503 when DB-less)
+│   ├── ratelimit.py       Redis fixed-window rate limiter (no-op without Redis)
 │   ├── routers/           health, auth, inference, retraining, events, devices
 │   └── services/
 │       ├── detector.py          CloudDetector (ONNX; per-user calibration; stub fallback)
@@ -48,10 +49,11 @@ uv run pytest                             # smoke + contract + schema tests (no 
 # Persistence is optional for local dev: with no FG_DATABASE_URL the gateway runs
 # DB-less (stub stores). For real persistence: start Postgres, MIGRATE as the owner,
 # then RUN as the non-superuser fall_app so Postgres RLS actually enforces.
-docker compose up -d --wait                                  # repo root: Postgres 16
+docker compose up -d --wait                                  # repo root: Postgres 16 + Redis 7
 export FG_DATABASE_URL=postgresql+asyncpg://fall:fall@localhost:5432/fall_guardian
 uv run alembic upgrade head                                  # schema + RLS + the fall_app role
 export FG_DATABASE_URL=postgresql+asyncpg://fall_app:fall_app@localhost:5432/fall_guardian
+export FG_REDIS_URL=redis://localhost:6379/0                 # enables rate limiting
 uv run uvicorn app.main:app
 
 # End-to-end smoke vs the live DB (register -> pair -> heartbeat -> inference -> events -> ack):
@@ -95,5 +97,8 @@ The watch tags every uploaded window with `payload_type`:
 - ✅ **Postgres RLS (Week D)**: every user-scoped table has a `FORCE`d policy keyed on a per-transaction
   `app.user_id` GUC; the gateway connects as the non-superuser `fall_app` (migration 0003) so the policies bind
   (superusers bypass RLS). Verified: a role with no `app.user_id` set sees **zero** rows.
-- ⏭ Next: the fit-at-pairing *write* path for `device_calibration`, refresh-token rotation, and the
-  Redis-backed rate-limit + SSE caregiver feed.
+- ✅ **Rate limiting (Phase 26)**: Redis fixed-window limiter on the public auth + pairing surface
+  (`/v1/auth/*`, `/v1/devices/pair`, `/v1/devices/pairing-codes`) — per (scope, client IP), `429` +
+  `Retry-After` over the limit. No-op without `FG_REDIS_URL`. Verified live: 10 logins, then `429`.
+- ⏭ Next: the **SSE caregiver feed** (Phase 27 — broadcast confirmed falls via Redis pub/sub), the
+  fit-at-pairing *write* path for `device_calibration`, and refresh-token rotation.
