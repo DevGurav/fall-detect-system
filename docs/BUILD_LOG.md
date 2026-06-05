@@ -935,6 +935,10 @@ Both were caught by `flutter analyze` on the first pass and fixed by reading the
 
 Architecture decision captured as ADR-012.
 
+### Build fix — Android core-library desugaring (first on-device run, 2026-06-06)
+
+The first build on a physical Android device failed: `Dependency ':flutter_local_notifications' requires core library desugaring to be enabled for :app`. flutter_local_notifications 20 uses `java.time` APIs that need **core library desugaring** to back-port them onto older API levels. Fixed in `android/app/build.gradle.kts` — and since the Flutter scaffold now emits the **Kotlin DSL**, the directives are the Kotlin forms, not the Groovy ones every StackOverflow answer quotes: `isCoreLibraryDesugaringEnabled = true` in `compileOptions` (not `coreLibraryDesugaringEnabled true`), plus a `dependencies { coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4") }` block. Two traps worth recording: v20 requires desugar_jdk_libs **≥ 2.1.4** (the commonly-quoted 2.0.3 swaps the error for a version-too-low one), and `minSdk` is floored at 21 via `maxOf(flutter.minSdkVersion, 21)`. Pure build config — no app code touched.
+
 ---
 
 > _End of current sessions. New work appends a new dated section below this line._
