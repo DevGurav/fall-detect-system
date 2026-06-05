@@ -265,3 +265,26 @@ Hoping that domain adaptation across body positions saves a wrist model trained 
 - The watch posts canceled windows to `/v1/retraining`; they are stored, never scored — no chance of a false-alarm upload paging a caregiver.
 - `RetrainingStore` is the seam for future MLOps persistence (Postgres `retraining_samples`), gated on `FG_RETRAINING_DB_DSN`; swapping it in is a one-method change, zero API/schema impact — same philosophy as the `CloudDetector` stub.
 - The §8 contract gains an optional `payload_type`; existing ESP32 firmware and the virtual device keep working without sending it.
+
+---
+
+## ADR-012 — Mobile live-feed transport: a hand-rolled `http` SSE consumer
+
+**Status**: Accepted (2026-06-06)
+
+**Context.** The caregiver app's headline feature is a real-time fall alert. The backend delivers confirmed falls over Server-Sent Events (`GET /v1/events/stream`, Phase 27): a per-user channel, `event: fall` JSON frames, a `: keepalive` comment every 15 s, and a `retry:` hint. On mobile the hard part isn't reading the stream — it's surviving a flaky network (reconnection, dead-socket detection, not hammering the server during an outage) plus the reality that an HTTP stream only lives while the app process does.
+
+**Decision.** Consume the feed with a hand-rolled `FallEventService` over `package:http`'s `Client.send()`, owning all transport policy: an infinite reconnect loop, exponential backoff with jitter (cap 30 s), a 30 s idle **watchdog** keyed on the server's 15 s keepalive to catch half-open sockets, and a 401/403 short-circuit to an `unauthorized` state. State is Riverpod 3.x — a `StreamProvider` for connection status and a `NotifierProvider` that fans each event to both the in-app feed and an OS notification. Background / terminated delivery is explicitly out of scope for this layer: `flutter_foreground_task` (added) will keep the socket warm when backgrounded, and **FCM** is the terminated-state channel; both feed the same `FallEvent` sink.
+
+**Alternatives considered.**
+
+- *An SSE package (`eventsource` / `sse_channel`)* — less code up front, but they abstract away reconnection and give no hook for a keepalive-based watchdog; the dead-socket case (no `onDone`, no error, just silence) is what they handle worst. Owning ~150 lines buys the resilience the product needs.
+- *WebSocket instead of SSE* — bidirectional and well-supported, but the backend already committed to SSE (one-way push, trivially proxyable, auto-`retry`); the client should match, not force a protocol change.
+- *Polling `GET /v1/events`* — simple and survives backgrounding, but it's the exact latency-vs-load tradeoff Phase 27 was built to kill; a caregiver shouldn't learn about a fall on a 30 s poll.
+- *FCM-only, no SSE* — the right terminated-state answer, but it makes the foreground experience depend on Google-infra round-trips and wouldn't show a sub-second live feed while the app is open. SSE-when-open + FCM-when-closed is the standard split.
+
+**Consequences.**
+
+- The UI is transport-agnostic: it consumes a `Stream<FallEvent>` + a `Stream<SseStatus>`, so adding the FCM producer later is additive — zero screen changes.
+- Some resilience code (watchdog / backoff) is ours to maintain, but it's unit-testable and isolated to one file.
+- A standing gap until the next slices: no JWT yet (the service idles `unauthorized` until the login flow lands) and no true background delivery (foreground / active only). Both are recorded in BUILD_LOG Phase 28's queue.

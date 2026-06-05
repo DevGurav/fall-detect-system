@@ -871,4 +871,70 @@ This closes the backend arc (Week D). Phase 28 (Week E) is the Flutter mobile re
 
 ---
 
+## Phase 28 — Flutter mobile rebuild (Week E): architecture + the live alert screen (2026-06-06)
+
+Week E opens the mobile rebuild. The v1/v2 Flutter app was unstyled Material with a hardcoded `localhost:5000`, a WebSocket imported but never used, and a README "emergency button" that didn't exist in code (Phase 1 audit). This is a clean `flutter create` (org `com.devgurav`, android + ios) — no v1 code carried over — and the first slice is the one that proves the whole backend arc was worth building: a caregiver screen that lights up the instant the cloud confirms a fall, fed by the Phase 27 SSE endpoint.
+
+### Architecture — feature-first with a shared core
+
+```text
+lib/
+├── main.dart                            ProviderScope shell; boots notifs + SSE
+├── core/
+│   ├── config/env.dart                  gateway base URL (--dart-define)
+│   ├── auth/token_store.dart            secure JWT read/write
+│   └── network/fall_event_service.dart  SSE consumer (reconnect/backoff/watchdog)
+├── services/notifications.dart          OS-notification surface
+└── features/alerts/
+    ├── data/models/fall_event.dart      payload model (mirrors _alert_payload)
+    ├── application/alert_providers.dart  Riverpod wiring
+    └── presentation/live_alert_screen.dart
+```
+
+The split that matters: `core/network/fall_event_service.dart` is the only thing that touches the socket; everything above it (the providers, the screen, the OS notification) is transport-agnostic and just consumes two clean streams. So when FCM lands as the background channel, the UI doesn't change — a second producer feeds the same `FallEvent` sink.
+
+### The SSE consumer (`FallEventService`)
+
+Raw `http.Client().send()` rather than an SSE package — I want explicit ownership of reconnection, and the wrapper libs hide exactly that. The class owns all transport policy so the UI never sees a dropped socket:
+
+- **Reconnect loop** — an outer `while (!_disposed)` re-opens the stream forever. A clean end resets the attempt counter; a 401/403 short-circuits into an `unauthorized` state (no infinite retry on a dead token — the auth layer must refresh and `start()` again).
+- **Backoff** — exponential (1→32 s), capped at 30 s, with up-to-500 ms jitter so a server blip doesn't trigger a synchronized reconnect stampede across clients.
+- **Watchdog** — the real subtlety. The backend emits a `: keepalive` comment every 15 s (Phase 27); I arm a 30 s idle `Timer` reset on *every* line — data or keepalive alike. If it fires, the socket is half-open (dead TCP that never raised `onDone`) and gets force-cycled. Without it, a silently-dropped connection looks "connected" forever.
+- **Frame parsing** — line-buffered over `utf8.decoder` → `LineSplitter`; accumulate `event:`/`data:` until the blank-line boundary, dispatch only `event: fall`. `retry:` and `:`-comments are ignored but still pet the watchdog. Malformed JSON is dropped, never fatal.
+
+`events` and `status` are broadcast streams so multiple consumers (the feed, the status badge, a future debug panel) share one socket.
+
+### State (Riverpod 3.x)
+
+- `fallEventServiceProvider` constructs + `start()`s the service, tears it down with the container.
+- `sseStatusProvider` (StreamProvider) → the connection badge (Live / Connecting / Reconnecting / Sign in / Offline).
+- `fallFeedProvider` (NotifierProvider) subscribes to `service.events` **once** and does two things per event: prepend to the newest-first in-app list **and** fire the OS notification. One subscription, two sinks — the alert surfaces whether or not the live screen is focused.
+
+### Foreground / background — what's real, what's deferred
+
+The SSE socket only lives while the process does. Foreground and app-backgrounded-but-alive are covered (the local notification surfaces the alert). **Terminated / Doze is not** — that's FCM's job and is deliberately *not* in this slice. `flutter_foreground_task` is added as a dependency (it will host the Android foreground-service that keeps the socket warm when backgrounded) but isn't wired into the native manifest yet. Recorded honestly so the gap is visible: today this is a foreground/active-app live feed, not a terminated-state push system.
+
+### Two API surprises worth recording (future-me)
+
+`flutter pub add` pulled current-stable, which moved two APIs out from under the obvious code:
+
+- **flutter_riverpod 3.3** — `AsyncValue.valueOrNull` is gone; it's `.value` now (returns `T?`).
+- **flutter_local_notifications 20.1** — `initialize` and `show` are all-named now (`initialize(settings: …)`, `show(id: …, title: …, body: …, notificationDetails: …)`); the old positional signatures don't compile.
+
+Both were caught by `flutter analyze` on the first pass and fixed by reading the installed package signatures rather than guessing.
+
+### Verified
+
+`flutter analyze` — **No issues found.** `flutter test` — **3/3** model/contract tests pass, including the DB-less frame (null `event_id` + null `lead_time_ms`) the gateway emits without Postgres, and the unknown-severity fallback. The model mirrors `_alert_payload` (event_store.py) field-for-field: `type, event_id?, device_id, ts_start_unix_ms, is_fall, confidence, severity ∈ {none,low,medium,high}, lead_time_ms?, model_version`.
+
+### → Next (queued)
+
+1. **Login + pairing flow** — mint and store the per-user JWT the service reads from `fg_access_token` (today it must be seeded manually); until then the stream sits in `unauthorized`.
+2. **Background delivery** — wire `flutter_foreground_task` into the Android manifest; add FCM for terminated-state pushes, feeding the same `FallEvent` sink.
+3. **Timeline + acknowledge** — `GET /v1/events` history and `POST /v1/events/{id}/acknowledge` so a caregiver can clear an alert server-side, not just locally.
+
+Architecture decision captured as ADR-012.
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._
