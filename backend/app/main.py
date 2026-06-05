@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app import __version__
+from app.broker import EventBroker
 from app.config import get_settings
 from app.db import Database
 from app.ratelimit import RateLimiter
@@ -37,10 +38,11 @@ async def _lifespan(app: FastAPI):
         redis = from_url(settings.redis_url, decode_responses=True)
     app.state.redis = redis  # None when no FG_REDIS_URL (rate limiting becomes a no-op)
     app.state.rate_limiter = RateLimiter(redis)
+    app.state.event_broker = EventBroker(redis)
     app.state.detector = CloudDetector(settings)  # built once, reused
     app.state.calibration_store = CalibrationStore(settings, app.state.db)
     app.state.retraining_store = RetrainingStore(settings, app.state.db)
-    app.state.event_store = EventStore(settings, app.state.db)
+    app.state.event_store = EventStore(settings, app.state.db, app.state.event_broker)
     app.state.device_service = DeviceService(settings, app.state.db)
     app.state.user_service = UserService(settings, app.state.db)
     app.state.pairing_service = PairingService(settings, app.state.db)

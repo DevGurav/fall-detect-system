@@ -850,4 +850,25 @@ Phase 27 — the SSE caregiver feed (broadcast a confirmed fall to connected car
 
 ---
 
+## Phase 27 — The SSE caregiver feed: confirmed falls pushed live via Redis pub/sub (2026-06-05)
+
+The last backend goal of the arc. Until now a confirmed fall was persisted and could be _pulled_ from `GET /v1/events`; a caregiver had to poll to learn their parent had fallen. This slice makes the alert **push**: the moment the cloud confirms a fall, it fans out to any connected caregiver in real time.
+
+### The broker
+`app/broker.py` holds a thin `EventBroker` over Redis pub/sub. A confirmed fall is published to a **per-user** channel, `events:user:{user_id}`; the broker exposes a `subscription(user_id)` async-context-manager that subscribes to exactly that one channel and tears the subscription down on exit. Gated like every other piece of optional infra: with no `FG_REDIS_URL` the broker is a no-op publisher (`is_stub`), so dev and the whole test suite still run without Redis — same pattern as the DB and the rate limiter.
+
+### The seam
+`EventStore.record_fall` now does two things: persist the fall (DB-gated, as before, returning the new `event_id` or `None` when DB-less), then publish the alert to the owner's channel. Crucially the publish is **not** DB-gated — a caregiver watching the stream must hear about a fall whether or not it was stored, so an uncalibrated/DB-less deployment still alerts (the payload's `event_id` is just `null`, meaning "no stored row to deep-link into"). The `/v1/inference` path is unchanged; it already called `record_fall` only on a confirmed verdict.
+
+### The endpoint
+`GET /v1/events/stream` is a user-authenticated `StreamingResponse` of `text/event-stream`. It yields a `retry:` directive, then enters the broker subscription and relays each published alert as an `event: fall` frame; between alerts it emits a `: keepalive` comment every 15 s to keep the connection (and any proxy) warm and to notice a client that has gone away. New `require_broker` dependency returns **503** without Redis, mirroring `require_db`. One subtlety worth recording: the endpoint emits `retry:` _before_ subscribing, so the first `: keepalive` (which fires right after Redis acknowledges the SUBSCRIBE) is the real "subscription is live" signal — the live-proof scripts keyed on that to avoid a publish-before-subscribe race that silently drops the message.
+
+### Verified
+ruff clean; **48/48** DB-less tests (6 new: the broker publishes the right channel + JSON and is a no-op without Redis; `record_fall` publishes the alert even DB-less and is inert with no broker; the stream 503s without Redis and 401s without a user token). **Proven live against real Postgres + Redis (stub detector for a deterministic fall):** register → mint pairing code → pair device → open `GET /v1/events/stream` → POST an impact window to `/v1/inference` → the `event: fall` frame arrived on the caregiver's stream **in real time, with the persisted `event_id`**, before the inference HTTP response had even returned. And the isolation half: with user B's stream open, a fall posted for user A's device confirmed fine but **B's feed stayed silent** — the per-user channel isolates the live feed exactly as RLS isolates the stored rows.
+
+### → Next (queued)
+This closes the backend arc (Week D). Phase 28 (Week E) is the Flutter mobile rebuild against this backend — and the SSE feed is what the caregiver app's live alert screen will consume. Then Phase 29 (Week F), the synthetic Indian-ADL telemetry engine. Still backend-side later: the fit-at-pairing _write_ path for `device_calibration` and refresh-token rotation.
+
+---
+
 > _End of current sessions. New work appends a new dated section below this line._

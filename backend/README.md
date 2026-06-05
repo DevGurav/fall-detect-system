@@ -100,5 +100,9 @@ The watch tags every uploaded window with `payload_type`:
 - ✅ **Rate limiting (Phase 26)**: Redis fixed-window limiter on the public auth + pairing surface
   (`/v1/auth/*`, `/v1/devices/pair`, `/v1/devices/pairing-codes`) — per (scope, client IP), `429` +
   `Retry-After` over the limit. No-op without `FG_REDIS_URL`. Verified live: 10 logins, then `429`.
-- ⏭ Next: the **SSE caregiver feed** (Phase 27 — broadcast confirmed falls via Redis pub/sub), the
-  fit-at-pairing *write* path for `device_calibration`, and refresh-token rotation.
+- ✅ **SSE caregiver feed (Phase 27)**: a confirmed fall is published to the owner's Redis channel and
+  pushed live to `GET /v1/events/stream` (Server-Sent Events, user-token authed) — `event: fall` frames
+  with the persisted `event_id`, comment-frame keepalives between alerts. Each caller subscribes only to
+  their own channel. Returns 503 without `FG_REDIS_URL`. Verified live: a fall reached the owner's stream
+  in real time while a second caregiver's stream stayed silent (per-user isolation).
+- ⏭ Next: the fit-at-pairing *write* path for `device_calibration`, and refresh-token rotation.

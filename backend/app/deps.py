@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException, Request, status
 
+from app.broker import EventBroker
 from app.db import Database
 
 
@@ -20,3 +21,20 @@ def require_db(request: Request) -> Database:
             "persistence is not configured (set FG_DATABASE_URL)",
         )
     return db
+
+
+def require_broker(request: Request) -> EventBroker:
+    """Gate the live SSE feed; returns 503 without Redis.
+
+    The broker is always present on `app.state`, but it's a no-op publisher with
+    no pub/sub backplane when Redis isn't configured — so a stream would never
+    deliver. Like `require_db`, this fails fast rather than hanging open a feed
+    that can't push.
+    """
+    broker: EventBroker = request.app.state.event_broker
+    if broker.is_stub:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "the live event feed is not configured (set FG_REDIS_URL)",
+        )
+    return broker

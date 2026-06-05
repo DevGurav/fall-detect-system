@@ -2,9 +2,11 @@
 
 When the `CloudDetector` confirms a fall on /v1/inference, the verdict is written
 to the `events` table (ARCHITECTURE §3.2), scoped to the authenticated device's
-owner. DB-less, `record_fall` is a no-op so /v1/inference still returns its verdict
-without persistence. The read side (`list_events`, `acknowledge`) backs GET
-/v1/events and POST /v1/events/{id}/acknowledge.
+owner, and fanned out to the owner's live SSE feed via the `EventBroker` (Phase
+27). DB-less, the row is skipped but the alert is still published — a caregiver
+watching the stream must hear about a fall whether or not it was persisted. The
+read side (`list_events`, `acknowledge`) backs GET /v1/events and POST
+/v1/events/{id}/acknowledge.
 
 Every DB call runs in a `session_for(user_id)` so Postgres RLS isolates rows to the
 caller; the explicit `user_id` filters below are kept as belt-and-suspenders.
@@ -23,15 +25,40 @@ from app.models import Event
 from app.schemas import EventOut, EventPage, InferenceRequest, InferenceResponse
 
 if TYPE_CHECKING:
+    from app.broker import EventBroker
     from app.db import Database
 
 logger = logging.getLogger(__name__)
 
 
+def _alert_payload(
+    req: InferenceRequest, verdict: InferenceResponse, *, event_id: UUID | None
+) -> dict:
+    """The JSON a caregiver's SSE stream receives for a confirmed fall.
+
+    `event_id` is the timeline row to deep-link into, or None when DB-less (the
+    alert still fires; there's just no stored event to open).
+    """
+    return {
+        "type": "fall",
+        "event_id": str(event_id) if event_id is not None else None,
+        "device_id": req.device_id,
+        "ts_start_unix_ms": req.ts_start_unix_ms,
+        "is_fall": verdict.is_fall,
+        "confidence": verdict.confidence,
+        "severity": verdict.severity.value,
+        "lead_time_ms": verdict.lead_time_ms,
+        "model_version": verdict.model_version,
+    }
+
+
 class EventStore:
-    def __init__(self, settings: Settings, db: Database | None) -> None:
+    def __init__(
+        self, settings: Settings, db: Database | None, broker: EventBroker | None = None
+    ) -> None:
         self.settings = settings
         self._db = db
+        self._broker = broker
 
     @property
     def is_stub(self) -> bool:
@@ -40,7 +67,22 @@ class EventStore:
     async def record_fall(
         self, req: InferenceRequest, verdict: InferenceResponse, *, user_id: UUID, device_pk: UUID
     ) -> UUID | None:
-        """Persist a confirmed fall to `events`. No-op (returns None) when DB-less."""
+        """Persist a confirmed fall, then publish it to the owner's live SSE feed.
+
+        Persistence is DB-gated (returns the new event id, or None when DB-less);
+        the broadcast is not — a caregiver watching the stream must hear about a
+        fall whether or not it was stored, so the publish runs in either case.
+        """
+        event_id = await self._persist_fall(req, verdict, user_id=user_id, device_pk=device_pk)
+        if self._broker is not None:
+            await self._broker.publish_fall(
+                user_id, _alert_payload(req, verdict, event_id=event_id)
+            )
+        return event_id
+
+    async def _persist_fall(
+        self, req: InferenceRequest, verdict: InferenceResponse, *, user_id: UUID, device_pk: UUID
+    ) -> UUID | None:
         if self._db is None:
             return None
         event_id = uuid4()
