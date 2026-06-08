@@ -1,0 +1,59 @@
+{
+  "run_id": "646b842201e4465fb54fb0ed527834f8",
+  "data_source": "WEDA-FALL",
+  "n_params": 47625,
+  "threshold": 0.5620584487915039,
+  "test": {
+    "threshold": 0.5620584487915039,
+    "recall": 0.7667560321715817,
+    "precision": 0.6908212560386473,
+    "f1": 0.726810673443456,
+    "fpr": 0.06722689075630252,
+    "fpr_adl": 0.050940438871473356,
+    "specificity": 0.9327731092436975,
+    "tp": 286.0,
+    "fp": 128.0,
+    "tn": 1776.0,
+    "fn": 87.0,
+    "n_positive": 373.0,
+    "n_adl": 1276.0
+  },
+  "lead": {
+    "n": 286,
+    "mean_ms": 241.46853637695312,
+    "median_ms": 260.0,
+    "p10_ms": 60.0,
+    "p90_ms": 460.0,
+    "histogram_counts": [
+      68,
+      0,
+      61,
+      0,
+      0,
+      58,
+      0,
+      54,
+      0,
+      45
+    ],
+    "histogram_edges_ms": [
+      60.0,
+      100.0,
+      140.0,
+      180.0,
+      220.0,
+      260.0,
+      300.0,
+      340.0,
+      380.0,
+      420.0,
+      460.0
+    ]
+  },
+  "targets": {
+    "recall": 0.95,
+    "fpr_adl": 0.05,
+    "lead_ms": 300.0
+  },
+  "checkpoint": "C:\\Users\\devgu\\Downloads\\Project\\Personal\\Repos\\fall-detect-system\\ml\\artifacts\\edge\\convlstm_tiny_fp32.pt"
+}
