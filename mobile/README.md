@@ -33,6 +33,11 @@ lib/
 
 ## Running
 
+> **Android builds need JDK 17 or 21** (not 22+). If Gradle fails with
+> `Unsupported class file major version`, point Flutter at a supported JDK —
+> e.g. Android Studio's bundled runtime:
+> `flutter config --jdk-dir "<Android Studio>/jbr"`.
+
 The app needs the gateway reachable at `Env.baseUrl` (default `http://10.0.2.2:8000`,
 the Android emulator → host loopback). Point it elsewhere with:
 
