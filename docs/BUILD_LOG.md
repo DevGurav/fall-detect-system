@@ -939,6 +939,10 @@ Architecture decision captured as ADR-012.
 
 The first build on a physical Android device failed: `Dependency ':flutter_local_notifications' requires core library desugaring to be enabled for :app`. flutter_local_notifications 20 uses `java.time` APIs that need **core library desugaring** to back-port them onto older API levels. Fixed in `android/app/build.gradle.kts` — and since the Flutter scaffold now emits the **Kotlin DSL**, the directives are the Kotlin forms, not the Groovy ones every StackOverflow answer quotes: `isCoreLibraryDesugaringEnabled = true` in `compileOptions` (not `coreLibraryDesugaringEnabled true`), plus a `dependencies { coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4") }` block. Two traps worth recording: v20 requires desugar_jdk_libs **≥ 2.1.4** (the commonly-quoted 2.0.3 swaps the error for a version-too-low one), and `minSdk` is floored at 21 via `maxOf(flutter.minSdkVersion, 21)`. Pure build config — no app code touched.
 
+### Login flow — minting the JWT the feed waits for (2026-06-06)
+
+The live screen worked but the SSE feed sat parked in `unauthorized` — there was no token. Week E's front door: `features/auth/`. An `AuthService` POSTs `{email, password}` to `/v1/auth/login` and persists the returned `access_token` to secure storage under `fg_access_token` — the same key `TokenStore` and the SSE service already read. A Material-3 `LoginScreen` (validated email/password, show/hide toggle, inline error banner, loading button) drives it, and an `AuthController` (`Notifier<AuthStatus>`) restores the session from storage at boot. `main.dart` became a small auth gate: `unknown` → splash, `authenticated` → `LiveAlertScreen`, `unauthenticated` → `LoginScreen`. The wire that matters: on a successful login the controller calls `ref.invalidate(fallEventServiceProvider)`, so the SSE service is rebuilt and reconnects reading the freshly-stored JWT rather than staying stuck `unauthorized`. Register, refresh-token rotation, and device pairing are the next auth slices.
+
 ---
 
 > _End of current sessions. New work appends a new dated section below this line._

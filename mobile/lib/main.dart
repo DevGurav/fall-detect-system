@@ -3,15 +3,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'features/alerts/application/alert_providers.dart';
 import 'features/alerts/presentation/live_alert_screen.dart';
+import 'features/auth/application/auth_providers.dart';
+import 'features/auth/presentation/login_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Build the container up front so notifications are initialised and the SSE
-  // loop is connecting before the first frame paints.
+  // Build the container up front so notifications are initialised before the
+  // first frame. The SSE loop starts only once we're past the login gate.
   final container = ProviderContainer();
   await container.read(notificationServiceProvider).init();
-  container.read(fallEventServiceProvider); // ..start() runs in the provider
 
   runApp(
     UncontrolledProviderScope(
@@ -33,7 +34,23 @@ class FallGuardianApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1565C0)),
         useMaterial3: true,
       ),
-      home: const LiveAlertScreen(),
+      home: const _RootGate(),
     );
+  }
+}
+
+/// Routes on auth state: splash while restoring the session, then login or feed.
+class _RootGate extends ConsumerWidget {
+  const _RootGate();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final auth = ref.watch(authControllerProvider);
+    return switch (auth) {
+      AuthStatus.unknown =>
+        const Scaffold(body: Center(child: CircularProgressIndicator())),
+      AuthStatus.authenticated => const LiveAlertScreen(),
+      AuthStatus.unauthenticated => const LoginScreen(),
+    };
   }
 }
