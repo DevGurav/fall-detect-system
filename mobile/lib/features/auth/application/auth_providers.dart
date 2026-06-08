@@ -41,8 +41,12 @@ class AuthController extends Notifier<AuthStatus> {
       return;
     }
     final expiry = await store.readExpiry();
-    if (expiry != null && !expiry.isAfter(DateTime.now())) {
-      await store.clear(); // already lapsed → sign in again
+    // Require a still-future expiry. A missing expiry means a stale token (an
+    // older build, or partially-cleared storage that kept the token but dropped
+    // the expiry) — treat it as untrusted and force a fresh sign-in instead of
+    // booting into the authenticated shell on a token the gateway will reject.
+    if (expiry == null || !expiry.isAfter(DateTime.now())) {
+      await store.clear();
       state = AuthStatus.unauthenticated;
       return;
     }
