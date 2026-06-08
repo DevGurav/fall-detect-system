@@ -3,30 +3,34 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../application/auth_providers.dart';
 import '../data/auth_service.dart';
-import 'register_screen.dart';
 import 'widgets/auth_error_banner.dart';
 
-/// Email/password sign-in. On success the auth controller flips state and the
-/// app shell routes to the live alert screen.
-class LoginScreen extends ConsumerStatefulWidget {
-  const LoginScreen({super.key});
+/// Create-account form. On success the auth controller flips state and this
+/// route pops to reveal the now-authenticated shell (the live feed), matching
+/// the login flow.
+class RegisterScreen extends ConsumerStatefulWidget {
+  const RegisterScreen({super.key});
 
   @override
-  ConsumerState<LoginScreen> createState() => _LoginScreenState();
+  ConsumerState<RegisterScreen> createState() => _RegisterScreenState();
 }
 
-class _LoginScreenState extends ConsumerState<LoginScreen> {
+class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   final _formKey = GlobalKey<FormState>();
+  final _name = TextEditingController();
   final _email = TextEditingController();
   final _password = TextEditingController();
+  final _confirm = TextEditingController();
   bool _loading = false;
   bool _obscure = true;
   String? _error;
 
   @override
   void dispose() {
+    _name.dispose();
     _email.dispose();
     _password.dispose();
+    _confirm.dispose();
     super.dispose();
   }
 
@@ -37,11 +41,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       _error = null;
     });
     try {
-      await ref.read(authControllerProvider.notifier).login(
+      await ref.read(authControllerProvider.notifier).register(
             email: _email.text.trim(),
             password: _password.text,
+            fullName: _name.text.trim(),
           );
-      // Auth state flips → the root gate re-routes to the home shell.
+      if (mounted) Navigator.of(context).pop(); // reveal the authenticated shell
     } on AuthException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } catch (_) {
@@ -51,16 +56,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     }
   }
 
-  void _goToRegister() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const RegisterScreen()),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Scaffold(
+      appBar: AppBar(title: const Text('Create account')),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -73,20 +72,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Icon(Icons.shield_moon_outlined,
-                        size: 64, color: theme.colorScheme.primary),
-                    const SizedBox(height: 16),
-                    Text('Fall Guardian',
-                        textAlign: TextAlign.center,
-                        style: theme.textTheme.headlineMedium),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Sign in to watch over your loved ones',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.bodyMedium
-                          ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                    TextFormField(
+                      controller: _name,
+                      enabled: !_loading,
+                      textInputAction: TextInputAction.next,
+                      textCapitalization: TextCapitalization.words,
+                      autofillHints: const [AutofillHints.name],
+                      decoration: const InputDecoration(
+                        labelText: 'Full name (optional)',
+                        prefixIcon: Icon(Icons.person_outline),
+                        border: OutlineInputBorder(),
+                      ),
                     ),
-                    const SizedBox(height: 32),
+                    const SizedBox(height: 16),
                     TextFormField(
                       controller: _email,
                       enabled: !_loading,
@@ -107,9 +105,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       controller: _password,
                       enabled: !_loading,
                       obscureText: _obscure,
-                      textInputAction: TextInputAction.done,
-                      autofillHints: const [AutofillHints.password],
-                      onFieldSubmitted: (_) => _submit(),
+                      textInputAction: TextInputAction.next,
+                      autofillHints: const [AutofillHints.newPassword],
                       decoration: InputDecoration(
                         labelText: 'Password',
                         prefixIcon: const Icon(Icons.lock_outline),
@@ -124,6 +121,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       validator: (v) => (v == null || v.length < 8)
                           ? 'At least 8 characters'
                           : null,
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _confirm,
+                      enabled: !_loading,
+                      obscureText: _obscure,
+                      textInputAction: TextInputAction.done,
+                      onFieldSubmitted: (_) => _submit(),
+                      decoration: const InputDecoration(
+                        labelText: 'Confirm password',
+                        prefixIcon: Icon(Icons.lock_outline),
+                        border: OutlineInputBorder(),
+                      ),
+                      validator: (v) =>
+                          (v != _password.text) ? 'Passwords do not match' : null,
                     ),
                     if (_error != null) ...[
                       const SizedBox(height: 16),
@@ -140,12 +152,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               width: 22,
                               child: CircularProgressIndicator(strokeWidth: 2.5),
                             )
-                          : const Text('Sign in'),
+                          : const Text('Create account'),
                     ),
                     const SizedBox(height: 8),
                     TextButton(
-                      onPressed: _loading ? null : _goToRegister,
-                      child: const Text("Don't have an account? Sign up"),
+                      onPressed: _loading ? null : () => Navigator.of(context).pop(),
+                      child: const Text('Already have an account? Sign in'),
                     ),
                   ],
                 ),
