@@ -4,8 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/auth/token_store.dart';
 import '../../../core/config/env.dart';
+import '../../../core/app/app_shell_state.dart';
 import '../../../core/network/fall_event_service.dart';
-import '../../../services/notifications.dart';
+import '../../../core/notifications/notification_service.dart';
 import '../data/models/fall_event.dart';
 
 /// Secure token storage (read by the SSE service for the bearer header).
@@ -48,7 +49,11 @@ class FallFeed extends Notifier<List<FallEvent>> {
 
     final sub = service.events.listen((event) {
       state = [event, ...state];
-      unawaited(notifier.showFall(event));
+      // Notify only when the live feed isn't already on screen: app in the
+      // background, or the user is on a different tab.
+      final liveVisible = ref.read(appResumedProvider) &&
+          ref.read(homeTabProvider) == HomeTab.live;
+      if (!liveVisible) unawaited(notifier.showFall(event));
     });
     ref.onDispose(sub.cancel);
 

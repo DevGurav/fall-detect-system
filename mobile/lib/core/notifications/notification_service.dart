@@ -1,10 +1,10 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
-import '../features/alerts/data/models/fall_event.dart';
+import '../../features/alerts/data/models/fall_event.dart';
 
-/// Surfaces confirmed falls as OS notifications so an alert is seen even when
-/// the live screen isn't focused. The in-app banner is driven separately by
-/// Riverpod state; both consume the same [FallEvent].
+/// Surfaces confirmed falls as OS notifications so an alert is seen when the
+/// live screen isn't on screen (app backgrounded, or a different tab). The
+/// in-app banner is driven separately by Riverpod state.
 class NotificationService {
   NotificationService([FlutterLocalNotificationsPlugin? plugin])
       : _plugin = plugin ?? FlutterLocalNotificationsPlugin();
@@ -12,10 +12,15 @@ class NotificationService {
   static const _channelId = 'fall_alerts';
   static const _channelName = 'Fall alerts';
   static const _channelDesc = 'Critical alerts when a fall is confirmed';
+  static const _fallPayload = 'fall';
 
   final FlutterLocalNotificationsPlugin _plugin;
+  void Function()? _onFallTapped;
 
-  Future<void> init() async {
+  /// [onFallTapped] fires when the user taps a fall notification — or launches
+  /// the app from one — so the shell can route to the timeline to acknowledge.
+  Future<void> init({void Function()? onFallTapped}) async {
+    _onFallTapped = onFallTapped;
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
     const darwin = DarwinInitializationSettings(
       requestAlertPermission: true,
@@ -24,11 +29,23 @@ class NotificationService {
     );
     await _plugin.initialize(
       settings: const InitializationSettings(android: android, iOS: darwin),
+      onDidReceiveNotificationResponse: _onResponse,
     );
     await _plugin
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>()
         ?.requestNotificationsPermission();
+
+    // Cold-launch: the app was opened by tapping a fall notification.
+    final launch = await _plugin.getNotificationAppLaunchDetails();
+    if ((launch?.didNotificationLaunchApp ?? false) &&
+        launch?.notificationResponse?.payload == _fallPayload) {
+      _onFallTapped?.call();
+    }
+  }
+
+  void _onResponse(NotificationResponse response) {
+    if (response.payload == _fallPayload) _onFallTapped?.call();
   }
 
   Future<void> showFall(FallEvent e) {
@@ -54,6 +71,7 @@ class NotificationService {
       body: '${e.deviceId} • ${e.severity.label} • '
           '${(e.confidence * 100).round()}% confidence',
       notificationDetails: details,
+      payload: _fallPayload,
     );
   }
 }

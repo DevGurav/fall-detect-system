@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'core/app/app_shell_state.dart';
 import 'features/alerts/application/alert_providers.dart';
 import 'features/alerts/presentation/live_alert_screen.dart';
 import 'features/alerts/presentation/timeline_screen.dart';
@@ -13,7 +14,16 @@ Future<void> main() async {
   // Build the container up front so notifications are initialised before the
   // first frame. The SSE loop starts only once we're past the login gate.
   final container = ProviderContainer();
-  await container.read(notificationServiceProvider).init();
+  await container.read(notificationServiceProvider).init(
+        onFallTapped: () => container.read(homeTabProvider.notifier).showTimeline(),
+      );
+
+  // Track foreground/background so the SSE feed only raises a notification when
+  // the live screen isn't already showing.
+  AppLifecycleListener(
+    onStateChange: (state) =>
+        container.read(appResumedProvider.notifier).update(state),
+  );
 
   runApp(
     UncontrolledProviderScope(
@@ -57,25 +67,23 @@ class _RootGate extends ConsumerWidget {
 }
 
 /// Authenticated shell — bottom nav between the live feed and the timeline.
-/// An IndexedStack keeps both alive (the SSE socket stays connected on switch).
-class HomeShell extends StatefulWidget {
+/// An IndexedStack keeps both alive (the SSE socket stays connected on switch);
+/// the selected tab lives in [homeTabProvider] so a notification tap can route
+/// here to the timeline.
+class HomeShell extends ConsumerWidget {
   const HomeShell({super.key});
 
-  @override
-  State<HomeShell> createState() => _HomeShellState();
-}
-
-class _HomeShellState extends State<HomeShell> {
-  int _index = 0;
   static const _screens = [LiveAlertScreen(), TimelineScreen()];
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final index = ref.watch(homeTabProvider);
     return Scaffold(
-      body: IndexedStack(index: _index, children: _screens),
+      body: IndexedStack(index: index, children: _screens),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
+        selectedIndex: index,
+        onDestinationSelected: (i) =>
+            ref.read(homeTabProvider.notifier).select(i),
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.notifications_active_outlined),
