@@ -26,6 +26,7 @@ htmlcov/
 
 # ─── Data (download via ml/DATA.md instructions; not committed) ──
 ml/data/raw/**
+!ml/data/raw/WEDA-FALL-main.zip
 ml/data/processed/**
 ml/data/interim/**
 ml/data/external/**
