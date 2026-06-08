@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'features/alerts/application/alert_providers.dart';
 import 'features/alerts/presentation/live_alert_screen.dart';
+import 'features/alerts/presentation/timeline_screen.dart';
 import 'features/auth/application/auth_providers.dart';
 import 'features/auth/presentation/login_screen.dart';
 
@@ -49,8 +50,45 @@ class _RootGate extends ConsumerWidget {
     return switch (auth) {
       AuthStatus.unknown =>
         const Scaffold(body: Center(child: CircularProgressIndicator())),
-      AuthStatus.authenticated => const LiveAlertScreen(),
+      AuthStatus.authenticated => const HomeShell(),
       AuthStatus.unauthenticated => const LoginScreen(),
     };
+  }
+}
+
+/// Authenticated shell — bottom nav between the live feed and the timeline.
+/// An IndexedStack keeps both alive (the SSE socket stays connected on switch).
+class HomeShell extends StatefulWidget {
+  const HomeShell({super.key});
+
+  @override
+  State<HomeShell> createState() => _HomeShellState();
+}
+
+class _HomeShellState extends State<HomeShell> {
+  int _index = 0;
+  static const _screens = [LiveAlertScreen(), TimelineScreen()];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: IndexedStack(index: _index, children: _screens),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _index,
+        onDestinationSelected: (i) => setState(() => _index = i),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.notifications_active_outlined),
+            selectedIcon: Icon(Icons.notifications_active),
+            label: 'Live',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.history_outlined),
+            selectedIcon: Icon(Icons.history),
+            label: 'History',
+          ),
+        ],
+      ),
+    );
   }
 }
