@@ -80,6 +80,9 @@ class AuthController extends Notifier<AuthStatus> {
   /// Shared post-auth wiring: rebuild the SSE service so it reconnects with the
   /// new JWT, arm the pre-expiry watch, and flip to authenticated.
   Future<void> _onAuthenticated() async {
+    // Register FCM token — stub passes null until google-services.json lands
+    // and FirebaseMessaging.instance.getToken() is wired in.
+    await ref.read(authServiceProvider).registerPushToken(null);
     ref.invalidate(fallEventServiceProvider);
     _armExpiry(await ref.read(tokenStoreProvider).readExpiry());
     state = AuthStatus.authenticated;

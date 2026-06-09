@@ -96,6 +96,30 @@ class AuthService {
   /// caller changes needed.
   Future<bool> refresh() async => false;
 
+  /// Register the device's FCM push token so the gateway can wake the app even
+  /// when it is killed. No-op when [fcmToken] is null — Firebase is not
+  /// configured yet (Phase 28b stub). Replace null with
+  /// `FirebaseMessaging.instance.getToken()` once google-services.json lands.
+  Future<void> registerPushToken(String? fcmToken) async {
+    if (fcmToken == null) return;
+    final token = await _tokenStore.readAccessToken();
+    if (token == null) return;
+    try {
+      await _client
+          .put(
+            Uri.parse('$baseUrl/v1/users/me/push-token'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode({'token': fcmToken}),
+          )
+          .timeout(const Duration(seconds: 10));
+    } on Exception {
+      // Non-fatal: failed FCM registration degrades gracefully to SSE-only.
+    }
+  }
+
   Future<void> logout() => _tokenStore.clear();
 
   Future<void> _persistSession(String body) async {

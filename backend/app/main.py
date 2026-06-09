@@ -16,11 +16,12 @@ from app.broker import EventBroker
 from app.config import get_settings
 from app.db import Database
 from app.ratelimit import RateLimiter
-from app.routers import auth, devices, events, health, inference, retraining
+from app.routers import auth, devices, emergency, events, health, inference, retraining, users
 from app.services.calibration_store import CalibrationStore
 from app.services.detector import CloudDetector
 from app.services.device_service import DeviceService
 from app.services.event_store import EventStore
+from app.services.fcm_service import FcmService
 from app.services.pairing_service import PairingService
 from app.services.retraining_store import RetrainingStore
 from app.services.user_service import UserService
@@ -42,7 +43,10 @@ async def _lifespan(app: FastAPI):
     app.state.detector = CloudDetector(settings)  # built once, reused
     app.state.calibration_store = CalibrationStore(settings, app.state.db)
     app.state.retraining_store = RetrainingStore(settings, app.state.db)
-    app.state.event_store = EventStore(settings, app.state.db, app.state.event_broker)
+    app.state.fcm_service = FcmService(settings.firebase_credentials_json)
+    app.state.event_store = EventStore(
+        settings, app.state.db, app.state.event_broker, app.state.fcm_service
+    )
     app.state.device_service = DeviceService(settings, app.state.db)
     app.state.user_service = UserService(settings, app.state.db)
     app.state.pairing_service = PairingService(settings, app.state.db)
@@ -65,6 +69,8 @@ def create_app() -> FastAPI:
     app.include_router(retraining.router)
     app.include_router(events.router)
     app.include_router(devices.router)
+    app.include_router(users.router)
+    app.include_router(emergency.router)
     return app
 
 

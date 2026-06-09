@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     # no-op — dev + tests run without Redis, mirroring the DB gate.
     redis_url: str | None = None
 
+    # Firebase service-account JSON (the full JSON string, not a file path) for
+    # FCM push notifications.  When unset, the FCM service is a no-op — the fall
+    # alert still fires over SSE, but no push is sent to a killed app.
+    # Set FG_FIREBASE_CREDENTIALS to the contents of your serviceAccountKey.json.
+    firebase_credentials_json: str | None = None
+
     @property
     def resolved_database_url(self) -> str | None:
         return self.database_url or self.retraining_db_dsn

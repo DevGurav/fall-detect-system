@@ -222,3 +222,24 @@ class PairResponse(BaseModel):
     token_type: str = "bearer"
     device_id: str
     user_id: UUID
+
+
+# ─── Push notifications + manual emergency (Phase 28b) ───────────────────────
+
+
+class PushTokenRequest(BaseModel):
+    """The caregiver app's FCM registration token (refreshed on each login)."""
+
+    token: str = Field(min_length=1)
+
+
+class EmergencyRequest(BaseModel):
+    """A manually triggered SOS alert from the caregiver app."""
+
+    device_ref: str | None = None   # optional: which device the patient wears
+    note: str | None = Field(default=None, max_length=500)
+
+
+class EmergencyResponse(BaseModel):
+    event_id: UUID | None       # None when DB-less
+    created_at: datetime

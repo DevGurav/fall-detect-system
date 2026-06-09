@@ -55,6 +55,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     hashed_password: Mapped[str | None] = mapped_column(String(255))  # set in the auth slice
     full_name: Mapped[str | None] = mapped_column(String(200))
+    fcm_token: Mapped[str | None] = mapped_column(String(256))  # caregiver's phone push token
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

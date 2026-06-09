@@ -24,6 +24,9 @@ dependencies = [
     "bcrypt>=4.2",
     # Redis: rate limiting (+ later SSE pub/sub for the caregiver feed).
     "redis>=5.0",
+    # FCM push notifications (optional — no-op without FG_FIREBASE_CREDENTIALS).
+    "google-auth>=2.29",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]

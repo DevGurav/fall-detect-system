@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from uuid import UUID
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -46,6 +48,20 @@ class UserService:
                 raise EmailTakenError(email) from exc
             await session.refresh(user)
             return user
+
+    async def update_push_token(self, user_id: UUID, token: str) -> None:
+        """Store or refresh the caregiver's FCM push token."""
+        async with self._db.session_for(user_id) as session:
+            user = await session.get(User, user_id)
+            if user is not None:
+                user.fcm_token = token
+                await session.commit()
+
+    async def get_fcm_token(self, user_id: UUID) -> str | None:
+        """Return the user's registered FCM token, or None if not set."""
+        async with self._db.session_for(user_id) as session:
+            user = await session.get(User, user_id)
+            return user.fcm_token if user else None
 
     async def authenticate(self, email: str, password: str) -> User | None:
         async with self._db.sessionmaker() as session:

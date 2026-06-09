@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/app/app_shell_state.dart';
@@ -10,6 +11,25 @@ import 'features/auth/presentation/login_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialise foreground-service options once at boot. The service is
+  // started/stopped inside fallEventServiceProvider when the SSE loop runs,
+  // keeping the socket alive even when the app is killed or backgrounded.
+  FlutterForegroundTask.init(
+    androidNotificationOptions: AndroidNotificationOptions(
+      channelId: 'fg_sse_channel',
+      channelName: 'Fall Guardian Alerts',
+      channelDescription:
+          'Keeps the fall-alert connection alive when the app is in the background.',
+      channelImportance: NotificationChannelImportance.LOW,
+      priority: NotificationPriority.LOW,
+    ),
+    iosNotificationOptions: const IOSNotificationOptions(),
+    foregroundTaskOptions: ForegroundTaskOptions(
+      eventAction: ForegroundTaskEventAction.nothing(),
+      autoRunOnBoot: false,
+    ),
+  );
 
   // Build the container up front so notifications are initialised before the
   // first frame. The SSE loop starts only once we're past the login gate.

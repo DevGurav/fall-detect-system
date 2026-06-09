@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/auth/token_store.dart';
@@ -19,6 +20,9 @@ final notificationServiceProvider =
 /// The long-lived SSE connection manager. Created and started here; torn down
 /// with the container. The always-mounted [sseStatusProvider] / [fallFeedProvider]
 /// keep it alive for the app's lifetime.
+///
+/// Also starts the Android foreground service so the SSE socket survives when
+/// the app is swiped away or the screen turns off.
 final fallEventServiceProvider = Provider<FallEventService>((ref) {
   final tokens = ref.watch(tokenStoreProvider);
   final service = FallEventService(
@@ -26,7 +30,19 @@ final fallEventServiceProvider = Provider<FallEventService>((ref) {
     eventStreamPath: Env.eventStreamPath,
     tokenProvider: tokens.readAccessToken,
   )..start();
-  ref.onDispose(service.dispose);
+
+  // Start the foreground service — shows a persistent low-priority notification
+  // that prevents Android from killing the SSE socket in the background.
+  unawaited(FlutterForegroundTask.startService(
+    serviceId: 1001,
+    notificationTitle: 'Fall Guardian',
+    notificationText: 'Watching for falls…',
+  ));
+
+  ref.onDispose(() {
+    service.dispose();
+    unawaited(FlutterForegroundTask.stopService());
+  });
   return service;
 });
 
