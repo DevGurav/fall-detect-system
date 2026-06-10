@@ -109,6 +109,7 @@ class InferenceResponse(BaseModel):
     severity: Severity
     action: str                       # e.g. "alert_caregiver" | "suppress"
     lead_time_ms: float | None = None
+    peak_ms2: float | None = None     # raw peak acceleration magnitude (m/s²)
     model_version: str
 
 
@@ -201,6 +202,7 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in: int                   # seconds
+    refresh_token: str | None = None  # 30-day opaque token; None in DB-less/stub mode
 
 
 class PairingCodeResponse(BaseModel):
@@ -242,4 +244,51 @@ class EmergencyRequest(BaseModel):
 
 class EmergencyResponse(BaseModel):
     event_id: UUID | None       # None when DB-less
+    created_at: datetime
+
+
+# ─── Refresh token (Phase 29) ─────────────────────────────────────────────────
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
+
+
+# ─── Calibration (Phase 29 — fit-at-first personalization) ───────────────────
+
+
+class CalibrationWindowsRequest(BaseModel):
+    """A batch of ADL windows sent during the 15-min fit-at-first session.
+
+    Same WindowEnvelope contract (125 samples @ 50 Hz) but routed to the
+    calibration accumulator instead of the fall detector.
+    """
+
+    windows: list[WindowEnvelope] = Field(min_length=1)
+
+
+class CalibrationResponse(BaseModel):
+    """Returned by POST /v1/devices/{id}/calibrate after fitting."""
+
+    device_id: str
+    n_adl_windows: int
+    fitted_at: datetime
+
+
+# ─── Emergency contacts (Phase 29) ───────────────────────────────────────────
+
+
+class ContactIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    phone: str = Field(min_length=5, max_length=32)
+    priority: int = Field(default=1, ge=1, le=10)
+
+
+class ContactOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    phone: str
+    priority: int
     created_at: datetime

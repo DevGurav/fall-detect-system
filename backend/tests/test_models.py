@@ -17,6 +17,7 @@ EXPECTED_TABLES = {
     "retraining_samples",
     "device_calibration",
     "audit_events",
+    "refresh_tokens",
 }
 
 

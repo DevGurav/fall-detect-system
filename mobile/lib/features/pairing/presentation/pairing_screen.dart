@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../application/pairing_providers.dart';
 import '../data/pairing_service.dart';
+import 'calibration_screen.dart';
 
 class PairingScreen extends ConsumerStatefulWidget {
   const PairingScreen({super.key});
@@ -60,6 +61,7 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
       setState(() => _pairError = 'Enter a device ID (any identifier).');
       return;
     }
+    final navigator = Navigator.of(context);
     setState(() {
       _pairing = true;
       _pairError = null;
@@ -67,7 +69,13 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
     });
     try {
       await ref.read(pairingServiceProvider).pairAsDevice(code, deviceId);
-      if (mounted) setState(() => _pairSuccess = true);
+      if (!mounted) return;
+      setState(() => _pairSuccess = true);
+      await navigator.push(
+        MaterialPageRoute<void>(
+          builder: (_) => const CalibrationScreen(),
+        ),
+      );
     } on PairingException catch (e) {
       if (mounted) setState(() => _pairError = e.message);
     } finally {

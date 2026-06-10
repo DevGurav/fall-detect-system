@@ -124,6 +124,7 @@ class CloudDetector:
             severity=self._severity(is_fall, peak_ms2),
             action="alert_caregiver" if is_fall else "suppress",
             lead_time_ms=None,
+            peak_ms2=peak_ms2,
             model_version=meta["model_version"],
         )
 

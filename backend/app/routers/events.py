@@ -50,6 +50,11 @@ async def acknowledge_event(
     event = await request.app.state.event_store.acknowledge(event_id=event_id, user_id=user_id)
     if event is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "event not found")
+    await request.app.state.audit_service.log(
+        "event.acknowledge",
+        user_id=user_id,
+        details={"event_id": str(event_id)},
+    )
     return event
 
 

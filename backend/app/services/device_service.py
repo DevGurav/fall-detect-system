@@ -80,6 +80,13 @@ class DeviceService:
             await session.commit()
             return out
 
+    async def get_device_pk(self, *, device_id: str, user_id: UUID) -> UUID | None:
+        """Return the PK (UUID) of a device the user owns, or None if absent."""
+        async with self._db.session_for(user_id) as session:
+            from app.security import get_device
+            device = await get_device(session, device_id)
+            return device.id if device else None
+
     async def list_devices(self, *, user_id: UUID) -> list[DeviceOut]:
         now = datetime.now(tz=timezone.utc)
         async with self._db.session_for(user_id) as session:

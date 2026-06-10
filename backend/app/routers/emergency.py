@@ -27,9 +27,16 @@ async def trigger_emergency(
     user_id: UUID = Depends(get_current_user),
 ) -> EmergencyResponse:
     """Create a manual-SOS event and alert the caregiver's registered contacts."""
+    device_ref = req.device_ref or "manual-sos"
     event_id, created_at = await request.app.state.event_store.record_sos(
         user_id=user_id,
-        device_ref=req.device_ref or "manual-sos",
+        device_ref=device_ref,
         note=req.note,
+    )
+    await request.app.state.audit_service.log(
+        "emergency.sos",
+        user_id=user_id,
+        device_ref=device_ref,
+        details={"event_id": str(event_id) if event_id else None, "note": req.note},
     )
     return EmergencyResponse(event_id=event_id, created_at=created_at)

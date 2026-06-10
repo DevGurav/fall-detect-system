@@ -89,12 +89,33 @@ class AuthService {
     }
   }
 
-  /// Silent token-rotation seam. The gateway exposes no refresh endpoint yet
-  /// (refresh-token rotation is a queued backend slice), so this returns false
-  /// and the caller falls back to a clean re-login. When `POST /v1/auth/refresh`
-  /// lands, post the refresh token here and `_persistSession` the result — no
-  /// caller changes needed.
-  Future<bool> refresh() async => false;
+  /// Silently rotate the refresh token. Calls POST /v1/auth/refresh, persists
+  /// the new access + refresh tokens, and returns true.  Returns false when no
+  /// refresh token is stored (first-boot, pre-Phase-29 token) so the caller can
+  /// fall back to a clean re-login.
+  Future<bool> refresh() async {
+    final refreshToken = await _tokenStore.readRefreshToken();
+    if (refreshToken == null) return false;
+    late final http.Response res;
+    try {
+      res = await _client
+          .post(
+            Uri.parse('$baseUrl/v1/auth/refresh'),
+            headers: const {'Content-Type': 'application/json'},
+            body: jsonEncode({'refresh_token': refreshToken}),
+          )
+          .timeout(const Duration(seconds: 15));
+    } on Exception {
+      return false; // network error — fall through to re-login
+    }
+    if (res.statusCode == 200) {
+      await _persistSession(res.body);
+      return true;
+    }
+    // 401 means the refresh token is invalid/expired — clear and force re-login.
+    if (res.statusCode == 401) await _tokenStore.clear();
+    return false;
+  }
 
   /// Register the device's FCM push token so the gateway can wake the app even
   /// when it is killed. No-op when [fcmToken] is null — Firebase is not
@@ -129,6 +150,11 @@ class AuthService {
       throw AuthException('No token was returned.');
     }
     final expiresIn = (json['expires_in'] as num?)?.toInt() ?? 3600;
-    await _tokenStore.writeSession(token, expiresInSeconds: expiresIn);
+    final refreshToken = json['refresh_token'] as String?; // null on pre-Phase-29 server
+    await _tokenStore.writeSession(
+      token,
+      expiresInSeconds: expiresIn,
+      refreshToken: refreshToken,
+    );
   }
 }

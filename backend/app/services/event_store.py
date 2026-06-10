@@ -121,7 +121,7 @@ class EventStore:
                     confidence=verdict.confidence,
                     severity=verdict.severity.value,
                     lead_time_ms=verdict.lead_time_ms,
-                    peak_ms2=getattr(verdict, "peak_ms2", None),
+                    peak_ms2=verdict.peak_ms2,
                     model_version=verdict.model_version,
                 )
             )
