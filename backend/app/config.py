@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # Set FG_FIREBASE_CREDENTIALS to the contents of your serviceAccountKey.json.
     firebase_credentials_json: str | None = None
 
+    # Better Stack (Logtail) source token for the log drain (Phase 32 observability).
+    # When set, structured JSON logs are shipped to Better Stack in addition to
+    # stdout; when unset, stdout JSON + a Fly.io log shipper is the path. Requires
+    # the optional `observability` extra (logtail-python) to actually ship.
+    better_stack_token: str | None = None
+
     @property
     def resolved_database_url(self) -> str | None:
         return self.database_url or self.retraining_db_dsn

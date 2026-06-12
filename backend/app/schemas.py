@@ -129,6 +129,27 @@ class HealthResponse(BaseModel):
     environment: str
 
 
+class ReadinessCheck(BaseModel):
+    """One dependency's result in the readiness probe (Phase 32)."""
+
+    name: str                                          # "database" | "redis" | "model"
+    status: Literal["ok", "skipped", "error"]          # skipped = optional infra not configured
+    detail: str | None = None                          # error message when status == "error"
+
+
+class ReadinessResponse(BaseModel):
+    """GET /health/ready — aggregate of the per-dependency checks.
+
+    `status` is "ready" only when no configured dependency reports an error;
+    the endpoint returns HTTP 503 alongside a "degraded" body so a probe (or a
+    human) can see exactly which check failed.
+    """
+
+    status: Literal["ready", "degraded"]
+    version: str
+    checks: list[ReadinessCheck]
+
+
 # ─── Telemetry: device heartbeat + read-side views (W2) ──────────────────────
 
 

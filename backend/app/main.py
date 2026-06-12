@@ -15,6 +15,7 @@ from app import __version__
 from app.broker import EventBroker
 from app.config import get_settings
 from app.db import Database
+from app.observability import TraceIDMiddleware, configure_logging
 from app.ratelimit import RateLimiter
 from app.routers import auth, contacts, devices, emergency, events, health, inference, retraining, users
 from app.services.audit_service import AuditService
@@ -62,11 +63,13 @@ async def _lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    configure_logging(get_settings())  # JSON logging + per-request trace_id (Phase 32)
     app = FastAPI(
         title="Fall Guardian — Cloud Gateway",
         version=__version__,
         lifespan=_lifespan,
     )
+    app.add_middleware(TraceIDMiddleware)
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(inference.router)

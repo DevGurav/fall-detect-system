@@ -27,6 +27,8 @@ dependencies = [
     # FCM push notifications (optional — no-op without FG_FIREBASE_CREDENTIALS).
     "google-auth>=2.29",
     "httpx>=0.27",
+    # Observability: structured JSON logging with a per-request trace_id (Phase 32).
+    "structlog>=24.1",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +36,11 @@ dev = [
     "pytest>=8.3",
     "httpx>=0.27",        # FastAPI TestClient transport
     "ruff>=0.6",
+]
+# Better Stack (Logtail) log drain. Optional — without it, JSON-on-stdout plus a
+# Fly.io log shipper is the path. Installed in prod images that set FG_BETTER_STACK_TOKEN.
+observability = [
+    "logtail-python>=0.3",
 ]
 
 [build-system]
