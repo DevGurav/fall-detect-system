@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A newer push to the same ref cancels the in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_PYTHON: "3.11"   # pin the interpreter uv resolves (pyproject allows >=3.11)
+
+jobs:
+  backend:
+    name: Backend — ruff + pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies (incl. dev)
+        run: uv sync --extra dev
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Test (pytest)
+        run: uv run pytest
+
+  migrations:
+    name: Backend — Alembic migration check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fall
+          POSTGRES_PASSWORD: fall
+          POSTGRES_DB: fall_guardian
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fall -d fall_guardian"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # alembic/env.py reads the DSN from app settings (FG_DATABASE_URL); the
+      # async driver scheme is required.
+      FG_DATABASE_URL: postgresql+asyncpg://fall:fall@localhost:5432/fall_guardian
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+
+      - name: Check for un-generated model changes (alembic check)
+        # Fails if app/models.py has schema changes not captured in a migration.
+        run: uv run alembic check
+
+  mobile:
+    name: Mobile — flutter test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Fetch packages
+        run: flutter pub get
+
+      - name: Test
+        run: flutter test
