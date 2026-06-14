@@ -1,0 +1,4 @@
+# Virtual device simulator dependencies.
+requests>=2.31      # POST windows to the gateway + run the pairing handshake
+numpy>=1.26         # resample the non-uniform Fitbit timestamps onto a 50 Hz grid
+PyJWT>=2.8          # local-mint a device token for the DB-less dev shortcut
