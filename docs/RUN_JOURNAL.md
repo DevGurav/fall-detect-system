@@ -138,9 +138,11 @@ hasn't been an issue in practice.
 **Redis client connects.** A non-blocking ping confirms Redis is reachable. Rate
 limiting and SSE pub/sub are both ready.
 
-**FCM service checks its credential.** `FG_FIREBASE_CREDENTIALS` is unset in this
-run, so the FCM service logs `fcm_disabled` and becomes a no-op. Fall alerts will still
-fire over SSE — FCM only adds the killed-app path.
+**FCM service initialises.** `FG_FIREBASE_CREDENTIALS` is set in `backend/.env` — the
+service-account JSON downloaded from Firebase Console → Project settings → Service
+accounts → Generate new private key, pasted as a single line. On boot the gateway logs
+`FCM service initialised for project fall-guardian-v3`. The full killed-app alert path
+is live alongside SSE.
 
 **Uvicorn binds `0.0.0.0:8000`.** The `--host 0.0.0.0` is essential — `127.0.0.1`
 would only accept connections from the laptop itself. With `0.0.0.0`, a physical phone
@@ -432,18 +434,19 @@ pushes the fall event to the channel the SSE endpoint is subscribed to. Redis de
 is in-memory and sub-millisecond — the message is in the channel almost
 instantaneously.
 
-**3. FCM push (no-op in this run).** `FcmService.send_fall_notification()` is called.
-Because `FG_FIREBASE_CREDENTIALS` is unset, the service immediately returns `None` with
-a log line `fcm_skipped: credentials not configured`. No network call. This is the
-"additive" design: the FCM call is always attempted, but failure (or absence) never
-breaks the alert path.
+**3. FCM push.** `FcmService.send_fall_notification()` calls the FCM HTTP v1 API via
+`httpx`, using the service-account credentials in `backend/.env`. It fires a push to
+the device token the phone registered at sign-in (`PUT /v1/users/me/push-token`). The
+call is non-fatal by design — a transient FCM error is logged but never blocks the SSE
+delivery above. This is what covers a *killed* app: when the phone is fully swiped
+away, the SSE socket isn't running, but the OS delivers the FCM notification to wake it.
 
 The structured log for this whole operation:
 
 ```json
 {"event": "fall_event_recorded", "user_id": "...", "device_id": "sim-watch-01",
  "confidence": 0.823, "severity": "high", "db": "ok", "redis": "published",
- "fcm": "skipped", "trace_id": "a3f2...", "level": "info"}
+ "fcm": "sent", "trace_id": "a3f2...", "level": "info"}
 ```
 
 ---
@@ -616,9 +619,9 @@ Redis client, and logs `application_shutdown`.
   in Google Colab, exported to ONNX, committed to the repo) runs in-process in the
   FastAPI gateway with zero external dependencies.
 
-- **The alert routing is correct.** SSE delivers foreground alerts in under 200ms. The
-  FCM path wires in additively once credentials are set, covering the killed-app case,
-  without producing duplicate alerts.
+- **The alert routing is correct.** SSE delivers foreground alerts in under 200ms. FCM
+  fires additively for the killed-app case — credentials are set, both paths are live,
+  and the app ignores foreground FCM so a single fall produces exactly one alert.
 
 - **Security holds.** RLS means one user can never see another's events. The pairing
   handshake uses short-lived codes. Device tokens are long-lived but scoped to one
