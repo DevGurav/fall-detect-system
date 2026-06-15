@@ -38,6 +38,17 @@ Future<void> main() async {
         onFallTapped: () => container.read(homeTabProvider.notifier).showTimeline(),
       );
 
+  // Initialise FCM (the killed-app push path). Best-effort: if Firebase isn't
+  // configured the app degrades to SSE-only. A token rotation re-registers with
+  // the gateway (no-ops until the user is signed in).
+  final messaging = container.read(messagingServiceProvider);
+  await messaging.init(
+    onFallTapped: () => container.read(homeTabProvider.notifier).showTimeline(),
+  );
+  messaging.onTokenRefresh.listen(
+    (token) => container.read(authServiceProvider).registerPushToken(token),
+  );
+
   // Track foreground/background so the SSE feed only raises a notification when
   // the live screen isn't already showing.
   AppLifecycleListener(

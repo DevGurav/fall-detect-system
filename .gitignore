@@ -70,6 +70,7 @@ out/
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
+google-services.json
 **/ios/Pods/
 **/ios/Flutter/flutter_assets/
 **/android/.gradle/

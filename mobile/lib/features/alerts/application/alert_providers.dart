@@ -7,6 +7,7 @@ import '../../../core/auth/token_store.dart';
 import '../../../core/config/env.dart';
 import '../../../core/app/app_shell_state.dart';
 import '../../../core/network/fall_event_service.dart';
+import '../../../core/notifications/messaging_service.dart';
 import '../../../core/notifications/notification_service.dart';
 import '../data/models/fall_event.dart';
 
@@ -16,6 +17,11 @@ final tokenStoreProvider = Provider<TokenStore>((ref) => TokenStore());
 /// OS-notification surface. [NotificationService.init] is called once at boot.
 final notificationServiceProvider =
     Provider<NotificationService>((ref) => NotificationService());
+
+/// FCM push surface (killed-app wake). [MessagingService.init] is called once at
+/// boot; the token is registered with the gateway after each sign-in.
+final messagingServiceProvider =
+    Provider<MessagingService>((ref) => MessagingService());
 
 /// The long-lived SSE connection manager. Created and started here; torn down
 /// with the container. The always-mounted [sseStatusProvider] / [fallFeedProvider]

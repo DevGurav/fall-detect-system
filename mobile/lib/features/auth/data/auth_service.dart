@@ -118,9 +118,9 @@ class AuthService {
   }
 
   /// Register the device's FCM push token so the gateway can wake the app even
-  /// when it is killed. No-op when [fcmToken] is null — Firebase is not
-  /// configured yet (Phase 28b stub). Replace null with
-  /// `FirebaseMessaging.instance.getToken()` once google-services.json lands.
+  /// when it is killed. No-op when [fcmToken] is null — Firebase is unavailable
+  /// (e.g. iOS without a plist), in which case the gateway falls back to SSE.
+  /// The token comes from `MessagingService.token()` (FirebaseMessaging).
   Future<void> registerPushToken(String? fcmToken) async {
     if (fcmToken == null) return;
     final token = await _tokenStore.readAccessToken();
