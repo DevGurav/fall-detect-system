@@ -2,29 +2,32 @@
 
 Industry-grade wrist-worn fall prediction & detection system for elderly users (Indian context).
 
-> 🚧 **Status:** Active build — Week C. Edge baseline shipped (96.5% recall); cloud Transformer detector trained (97.0% recall, OOF) and **served in the gateway via ONNX** (heuristic stub retired). Edge→cloud cascade ADL false-positive rate **0.7%**. See [Build sequence](#build-sequence) below.
+> ✅ **Status:** Feature-complete (Weeks A–F). Edge ConvLSTM-tiny shipped (96.5% recall, ~46 KB INT8); cloud Transformer detector trained with **5-fold cross-validation** and **served in-process via ONNX** (heuristic stub retired); edge→cloud cascade ADL false-positive rate **0.7%**. Full backend (auth, RLS, rate limiting, SSE), Flutter caregiver app (live alerts + **additive FCM** + emergency SOS), ESP32-S3 firmware, and CI all in place. **Runs locally** (Docker Compose + an ngrok tunnel) — no cloud bill. See [Build sequence](#build-sequence) below and the full runbook in [`docs/RUN.md`](docs/RUN.md).
 
 ## The system in one diagram
 
 ```text
-   ESP32-S3 wrist wearable                FastAPI cloud
-   (MPU6050 IMU @ 50 Hz)                  (Fly.io)
+   ESP32-S3 wrist wearable                FastAPI gateway (local :8000)
+   (MPU6050 IMU @ 50 Hz)                  exposed via an ngrok HTTPS tunnel
    ┌──────────────────────┐               ┌──────────────────────┐
    │  Edge model          │               │  Cloud model         │
-   │  ConvLSTM-tiny INT8  │ ─── alerts ─► │  Transformer encoder │
-   │  ~80 KB · <80 ms     │               │  full sliding window │
+   │  ConvLSTM-tiny INT8  │ ─── alerts ─► │  Transformer (ONNX)  │
+   │  ~46 KB · <80 ms     │               │  full sliding window │
    │  predicts PRE-impact │               │  confirms / cancels  │
-   │  (~300 ms lead time) │               │  + assigns severity  │
+   │  (~256 ms lead time) │               │  + assigns severity  │
    └──────────────────────┘               └──────────┬───────────┘
                                                      │
-                                  ┌──────────────────┴──────────────────┐
-                                  │                                     │
-                          Flutter wrist app                   Next.js caregiver
-                          (offline, bilingual,                 web dashboard
-                           emergency button)
+                                       SSE (foreground) + FCM (background/killed)
+                                                     │
+                                          ┌──────────▼───────────┐
+                                          │  Flutter caregiver   │
+                                          │  app — live alerts,  │
+                                          │  timeline, SOS,      │
+                                          │  pairing, calibration│
+                                          └──────────────────────┘
 ```
 
-**The headline:** the wearable can alert in the **~300 ms window between fall initiation and ground impact** — not just after the person hits the floor.
+**The headline:** the wearable can alert in the **~300 ms window between fall initiation and ground impact** — not just after the person hits the floor. The whole path runs on your laptop and can be driven end-to-end with **no hardware** via the [`virtual_device/`](virtual_device/) WEDA-FALL replay simulator.
 
 ## Personalization — the local grace period
 
@@ -40,13 +43,15 @@ This project replaces two earlier prototypes (`fall-detect-system`, `fall-simula
 
 | Folder | What it is |
 |---|---|
-| [`ml/`](ml/) | PyTorch training, MLflow experiment tracking, datasets, feature engineering, model export |
-| [`backend/`](backend/) | FastAPI inference service + Postgres + JWT auth + rate limiting |
-| [`mobile/`](mobile/) | Flutter wrist companion app — Riverpod 2 + GoRouter + Drift offline + emergency button |
-| [`dashboard/`](dashboard/) | Next.js caregiver web dashboard — Tailwind v4 + SSE real-time |
-| [`edge/`](edge/) | ESP32-S3 firmware — ESP-IDF + TFLite Micro |
-| [`virtual_device/`](virtual_device/) | Python IMU simulator (lets us develop + demo without real hardware) |
-| [`docs/`](docs/) | Architecture, audit of v1/v2, validation methodology, model cards |
+| [`ml/`](ml/) | PyTorch training, MLflow experiment tracking, datasets, feature engineering, ONNX/TFLite export, 5-fold cross-validation |
+| [`backend/`](backend/) | FastAPI gateway — in-process ONNX detector + Postgres (RLS) + JWT auth + Redis rate limiting + SSE + additive FCM |
+| [`mobile/`](mobile/) | Flutter caregiver app — Riverpod 3, live SSE alerts, timeline + acknowledge, emergency SOS, pairing + calibration, FCM |
+| [`edge/`](edge/) | ESP32-S3 firmware — PlatformIO + TFLite Micro (sensing, inference, grace period, BLE pairing, HTTPS uplink) |
+| [`virtual_device/`](virtual_device/) | WEDA-FALL replay simulator — drives the whole gateway path without real hardware |
+| [`docs/`](docs/) | Architecture, runbook, audit of v1/v2, decisions (ADRs), validation methodology, model card, build log |
+
+> The locked design also called for a Next.js web dashboard; it was dropped in
+> favor of the Flutter app as the caregiver client (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §2.5).
 
 ## Datasets — wrist-worn only
 
@@ -81,14 +86,15 @@ The defining feature of v3 vs v1/v2 is that the metrics are *trustworthy*:
 
 ## Build sequence
 
-| Week | Focus | Deliverables |
-|---|---|---|
-| **A** | Data foundation | WEDA-FALL download · loaders · sliding-window + feature extraction · EDA · MLflow setup |
-| **B** | Edge model | Train ConvLSTM-tiny on WEDA-FALL · INT8 quantize · size + simulated latency report |
-| **C** | Cloud model + backend skeleton | Transformer detector · FastAPI + Postgres + JWT · `/v1/inference` (emergency) **+ `/v1/retraining` (canceled-false-alarm capture)** · deploy to Fly.io |
-| **D** | Mobile rebuild | Flutter — Riverpod + GoRouter + design system + auth + pairing + live status + **emergency button** + **local grace period (10 s buzz + Cancel)** + offline + bilingual |
-| **E** | Indian-ADL collection + retraining | Collect 60–100 min of supplemental ADL data · retrain both models · **fine-tune on collected `CANCELED_FALSE_ALARM` windows / per-user thresholds** · re-measure |
-| **F** | Edge deploy + dashboard + polish | TFLite Micro on ESP32-S3 · Next.js dashboard · observability stack · CI/CD · demo video |
+| Week | Focus | Deliverables | Status |
+|---|---|---|---|
+| **A** | Data foundation | WEDA-FALL download · loaders · sliding-window + feature extraction · EDA · MLflow setup | ✅ |
+| **B** | Edge model | Train ConvLSTM-tiny on WEDA-FALL · INT8 quantize · size + simulated latency report | ✅ |
+| **C** | Cloud model + backend skeleton | Transformer detector (served **in-process as ONNX**) · FastAPI + Postgres + JWT · `/v1/inference` (emergency) **+ `/v1/retraining` (canceled-false-alarm capture)** | ✅ |
+| **D** | Backend infrastructure | Async SQLAlchemy + Alembic (8 tables) · per-user/per-device JWT + 8-char pairing · Postgres RLS (`fall_app`) · Redis rate limiting · **SSE caregiver feed** | ✅ |
+| **E** | Mobile rebuild | Flutter (Riverpod 3) — auth + pairing + live SSE alerts + timeline/acknowledge + **emergency SOS** + calibration onboarding + **additive FCM** (background/killed) | ✅ |
+| **F** | ML hardening + edge firmware + production | **5-fold cross-validated** cloud re-export (baseline kept in `model_old/`) · **ESP32-S3 firmware** (TFLite Micro + grace period + BLE pairing) · Docker + GitHub Actions CI + structured logging | ✅ |
+| **Deploy** | Local-first | **Docker Compose (Postgres + Redis) + ngrok tunnel** to a physical phone — zero-cost, zero-latency (replaced the managed-cloud plan) | ✅ |
 
 ## License
 

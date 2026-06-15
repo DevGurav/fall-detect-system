@@ -1,10 +1,11 @@
 # virtual_device
 
 A software stand-in for the ESP32-S3 + MPU6050 wristband. It replays recorded
-WEDA-FALL IMU windows to the cloud gateway exactly the way the real firmware
-would — same 2.5 s × 50 Hz window, same §8 ingestion envelope, same two-path
-routing — so the backend can be exercised end-to-end with no hardware on the
-bench. See [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) §8 and ADR-011.
+WEDA-FALL trials as **uniform 50 Hz** IMU windows to the cloud gateway exactly the
+way the real firmware would — same 2.5 s × 50 Hz (125-sample) window, same §8
+ingestion envelope, same two-path routing — so the whole gateway → SSE/FCM → phone
+path can be exercised **end-to-end with no hardware** on the bench. See
+[`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) §2.6 and §8, and ADR-011.
 
 ## What it does
 

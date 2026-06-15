@@ -1,6 +1,20 @@
 # Architecture — Fall Guardian v3
 
-Technical reference for the current Fall Guardian v3 system. Reflects the locked design as of 2026-05-31. For the engineering reasoning behind each choice, see [`DECISIONS.md`](DECISIONS.md). For chronological build history, see [`BUILD_LOG.md`](BUILD_LOG.md). For the audit of the v1/v2 prototypes this replaces, see [`AUDIT_v1_v2.md`](AUDIT_v1_v2.md).
+Technical reference for the Fall Guardian v3 system **as built**. The original
+locked design (2026-05-31) targeted a managed cloud deployment (Fly.io + Supabase
++ Upstash) and a separate Next.js caregiver dashboard; the shipped system pivoted
+to a **local-first deployment** (Docker Compose + an ngrok tunnel) with the
+**Flutter app as the sole caregiver client**. This document reflects the shipped
+system; the deltas are called out inline. For the engineering reasoning behind
+each choice, see [`DECISIONS.md`](DECISIONS.md). For chronological build history,
+see [`BUILD_LOG.md`](BUILD_LOG.md). For the audit of the v1/v2 prototypes this
+replaces, see [`AUDIT_v1_v2.md`](AUDIT_v1_v2.md).
+
+> **What changed between "locked design" and "as built"** (see §7 and §2.5):
+> - **Deployment:** managed cloud (Fly.io/Render) → **local Docker Compose + a secure ngrok tunnel** (port 8000). Zero-cost, zero-latency, and good enough to test a *physical* phone against the real backend.
+> - **Cloud model serving:** separate PyTorch RPC service → **ONNX served in-process** inside the FastAPI gateway (torch-free).
+> - **Caregiver dashboard:** the Next.js web dashboard was **dropped**; the **Flutter app is the caregiver client** (live alerts over SSE + FCM).
+> - **Model versioning:** the active model is the **5-fold cross-validated** export; the Phase-20 baseline is preserved under [`backend/app/model_old/`](../backend/app/model_old/).
 
 ---
 
@@ -23,33 +37,35 @@ Technical reference for the current Fall Guardian v3 system. Reflects the locked
               │  (sends 2–3 s window ONLY when edge model fires)
               ↓
    ┌────────────────────────────────────────────────────────────────┐
-   │  FastAPI Gateway  (Fly.io)                                     │
+   │  FastAPI Gateway  (local host :8000, exposed via ngrok tunnel)  │
    │  /v1/inference   ← emergency window → cloud detector → alert    │
    │  /v1/retraining  ← canceled false alarm → stored for MLOps      │
-   │  /v1/devices     ← OAuth user routes                           │
-   │  /v1/events      ← timeline · acknowledge · escalation         │
+   │  /v1/devices     ← user + device routes (JWT)                   │
+   │  /v1/events      ← timeline · acknowledge · SSE stream          │
+   │  /v1/emergency   ← manual SOS                                   │
    └────────┬───────────────────────────────────────────────────────┘
             │
-            ├──► PostgreSQL (Supabase) — users, devices, events
-            ├──► Redis        — rate-limit, pub/sub for SSE
-            ├──► CLOUD MODEL — Transformer encoder (or 1D-CNN→LSTM)
+            ├──► PostgreSQL 16 (local Docker) — users, devices, events…
+            ├──► Redis 7      (local Docker) — rate-limit, pub/sub for SSE
+            ├──► CLOUD MODEL — Transformer encoder, served IN-PROCESS as ONNX
             │     • runs full sliding-window classification
             │     • CONFIRMS or SUPPRESSES the edge prediction
-            │     • outputs: {is_fall, lead_time_ms, confidence, severity}
-            │     • MLflow-tracked, semver, rollback-able
-            └──► Notifier — FCM + email + retry queue + escalation
+            │     • outputs: {is_fall, confidence, severity, action}
+            │     • active = 5-fold CV export; baseline kept in model_old/
+            └──► Notifier — SSE (foreground) + FCM (background/killed app)
 
-   ┌──────────────────────┐         ┌──────────────────────┐
-   │  Flutter App         │         │  Next.js Dashboard   │
-   │  (wrist companion)   │         │  (caregiver web)     │
-   │  Riverpod 2 · GoRouter│        │  TS · Tailwind v4    │
-   │  Drift (offline)     │         │  SSE real-time       │
-   │  ⚠ Emergency button  │         │  Multi-device view   │
-   │  Bilingual (EN/HI)   │         │  Event timeline      │
-   └──────────────────────┘         └──────────────────────┘
+   ┌──────────────────────┐         ┌───────────────────────────────┐
+   │  Flutter App         │         │  ngrok                        │
+   │  (caregiver client)  │ ◄─SSE──┤  https://<sub>.ngrok-free.app │
+   │  Riverpod 3 · feeds  │ ◄─FCM──┤  → forwards to host :8000     │
+   │  live alert + timeline│        │  (zero-cost public HTTPS for  │
+   │  ⚠ Emergency SOS     │         │   testing a *physical* phone) │
+   │  pairing + calibration│        └───────────────────────────────┘
+   └──────────────────────┘
+   (The Next.js web dashboard from the locked design was dropped — see §2.5.)
 
-   Observability: JSON logs → Better Stack · OTel → Tempo
-                  Metrics → Prometheus + Grafana · Errors → Sentry
+   Observability: structured JSON logs (+ optional Better Stack drain),
+                  per-request trace IDs, /health + /health/ready probes.
 ```
 
 ---
@@ -76,7 +92,7 @@ Technical reference for the current Fall Guardian v3 system. Reflects the locked
 
 ### 2.2 Cloud gateway — FastAPI
 
-**Stack**: FastAPI 0.115+, Python 3.11+, Pydantic v2 for schema validation, Uvicorn for ASGI, deployed in Docker on Fly.io (chosen over Render to avoid cold-start tax on the free tier).
+**Stack**: FastAPI 0.115+, Python 3.11+, Pydantic v2 for schema validation, Uvicorn for ASGI. **Deployment is local-first** (`uvicorn app.main:app --host 0.0.0.0 --port 8000`, with Postgres + Redis from `docker-compose.yml`); a physical phone reaches it either over the LAN or, preferably, through a **secure ngrok tunnel** that gives the host a public HTTPS URL at zero cost and zero added latency. The managed-cloud deploy (Fly.io/Render) from the locked design was dropped — see §7. A multi-stage `backend/Dockerfile` is kept for reproducible builds and as a future re-deploy seam.
 
 **Endpoints** (all under `/v1/`):
 
@@ -86,20 +102,43 @@ Technical reference for the current Fall Guardian v3 system. Reflects the locked
 - `GET /v1/devices` — list a user's paired devices with live status (online/offline, last-seen, battery).
 - `GET /v1/events` — fall-event timeline for a user, paginated.
 - `POST /v1/events/{event_id}/acknowledge` — caregiver acks an alert.
+- `GET /v1/events/stream` — Server-Sent Events feed of the caller's confirmed falls (per-user Redis channel).
+- `POST /v1/emergency` — caregiver-initiated manual SOS (fans out to SSE + FCM like a confirmed fall).
+- `PUT /v1/users/me/push-token` — registers the app's FCM token so the gateway can push to a killed app.
 
-**Auth**: OAuth 2.0 + JWT. Access tokens 15 min, refresh tokens 30 days with rotation. Per-device JWTs separate from per-user JWTs.
+**Auth**: JWT (PyJWT). Per-user access tokens 15 min + refresh tokens with rotation; per-device JWTs (issued at pairing, 365-day TTL) are separate from per-user JWTs. bcrypt password hashing.
 
 **Storage**:
 
-- **PostgreSQL 16** (Supabase) — system of record for users, devices, events, audit log. Row-level security ties events to user_id. Alembic for migrations.
-- **Redis 7** — rate limiting (60 req/min per device, 10 pairing attempts/hr per IP), session cache, pub/sub channel that drives the Next.js dashboard's Server-Sent Events feed.
-- **Firebase** — kept only for FCM push notifications. Firestore rules scoped to `request.auth.uid`. No Firestore as system-of-record.
+- **PostgreSQL 16** (local Docker) — system of record for users, devices, events, retraining samples, calibration, audit log. Row-level security ties every user-scoped row to `user_id` (enforced by connecting as the non-superuser `fall_app` role). Alembic for migrations.
+- **Redis 7** (local Docker) — rate limiting (public auth + pairing surface) and the per-user pub/sub channel (`events:user:{user_id}`) that drives the SSE feed. No-op when `FG_REDIS_URL` is unset.
+- **Firebase Cloud Messaging** — push to a backgrounded/killed app only (**additive** to SSE — see §2.4 and §3.2). Gated on the service-account JSON (`FG_FIREBASE_CREDENTIALS`); a no-op when unset, so the SSE path still fires.
 
-### 2.3 Cloud ML — separate inference service
+**Cloud detection model — versioning & preservation**: the gateway serves the
+trained Transformer detector **in-process as a portable ONNX artifact** (no torch
+dependency — onnxruntime runs the graph, numpy does the preprocessing). The active
+path loads [`backend/app/model/cloud_detector.onnx`](../backend/app/model/) + its
+`.meta.json` (decision threshold, Platt scaling, per-channel/feature normalisers,
+severity scaler). That active artifact is the **5-fold subject-stratified
+cross-validated** export (Phase 30). The earlier **Phase-20 baseline** is preserved
+verbatim under [`backend/app/model_old/`](../backend/app/model_old/) so the
+pre-CV model can be diffed or rolled back without git archaeology. If no artifact
+is present the detector falls back to a transparent peak-acceleration **stub**, and
+every response carries `model_version` so a stub is never mistaken for the real
+model. See [`detector.py`](../backend/app/services/detector.py).
 
-**Stack**: Python service, PyTorch model loaded into a long-lived process, exposed as an internal RPC to the gateway. Containerised separately so it can scale independently. MLflow-tracked: every deployed model is identifiable by run-id + semantic version + checksum, rollback-able from the registry.
+### 2.3 Cloud ML — in-process ONNX detector
 
-**Model**: Transformer encoder over the raw 2.5 s window (125×6) with the 43-dim engineered feature vector fused at the pooled head (or a 1D-CNN → LSTM hybrid — pick chosen empirically during training). Outputs:
+**As built** (delta from the locked design): rather than a separate PyTorch RPC
+service, the trained detector is exported to **ONNX and served in-process** inside
+the gateway via onnxruntime (CPU provider). This keeps the backend torch-free,
+removes a network hop and a second container, and makes the model a committed,
+diffable artifact. The model is still MLflow-tracked during training (run-id +
+metrics + artifacts), and the in-repo `model/` ⇄ `model_old/` split (see §2.2)
+gives a one-line rollback. A separate scale-out service remains the upgrade path if
+load ever demands it.
+
+**Model**: Transformer encoder over the raw 2.5 s window (125×6) with the 43-dim engineered feature vector fused at the pooled head. The active export was trained with **5-fold subject-stratified cross-validation** (Phase 30). Outputs:
 
 - Binary `P(fall)` — IMPACT+POST_IMPACT vs not. Matches the edge's PRE_IMPACT mirror (`Phase.is_positive_for_detection`) and the `is_fall` ingestion contract; the earlier 3-class `{ADL, near-fall, true-fall}` draft is superseded (see ADR-011 / MODEL_CARD §1.3).
 - Regression head for severity (predicted peak acceleration magnitude).
@@ -107,7 +146,13 @@ Technical reference for the current Fall Guardian v3 system. Reflects the locked
 
 ### 2.4 Mobile companion — Flutter
 
-**Stack**: Flutter 3.x, Riverpod 2 for state, GoRouter for navigation, Drift (SQLite) for offline storage, `intl` for bilingual (English + Hindi). Material 3 with a custom design system (`FGButton`, `FGCard`, `FGStatusChip`).
+**Stack**: Flutter 3.35 / Dart 3.9, Riverpod 3 for state, `http` for the SSE transport (full control over reconnect/backoff/watchdog), `flutter_local_notifications` for OS alerts, `flutter_secure_storage` for JWTs at rest, `firebase_core` + `firebase_messaging` for push. **The Flutter app is the caregiver client** — the Next.js web dashboard from the locked design was dropped (§2.5).
+
+**Hybrid alert routing — SSE + additive FCM** (the rule that prevents duplicate alerts):
+
+- **Foreground (app open)** → the **SSE feed** (`GET /v1/events/stream`) is the source of truth. The app holds the open stream and raises the in-app alert / local notification itself. FCM messages that arrive in the foreground are deliberately **ignored** so the same fall is never shown twice.
+- **Background / killed app** → the SSE socket can't run, so **FCM is the wake path**. The backend sends an FCM `notification` block, the OS renders the tray entry, and a tap routes into the timeline. FCM is therefore strictly **additive** — it covers only the states SSE cannot.
+- If Firebase is unconfigured the app **degrades cleanly to SSE-only** (push token stays null). See [`messaging_service.dart`](../mobile/lib/core/notifications/messaging_service.dart) and §3.2.
 
 **Key features**:
 
@@ -120,25 +165,34 @@ Technical reference for the current Fall Guardian v3 system. Reflects the locked
 - Accessibility: large-text + high-contrast modes, screen-reader labels (real elderly users need these).
 - Offline: actions queued in Drift when offline, synced on reconnect.
 
-### 2.5 Caregiver web dashboard — Next.js
+### 2.5 Caregiver web dashboard — Next.js (DROPPED)
 
-**Stack**: Next.js 16 (App Router) + TypeScript + Tailwind v4 + Recharts/Tremor for charts. Real-time via Server-Sent Events from the gateway's Redis pub/sub channel.
+The locked design called for a separate Next.js web dashboard. It was **not
+built**: the Flutter app (§2.4) covers the caregiver surface — live alerts,
+timeline, acknowledge, manual SOS — over the same SSE feed the dashboard would
+have consumed, so a second client added cost without adding capability for the
+single-caregiver target use case. The gateway's `GET /v1/events/stream` is
+transport-agnostic, so a web dashboard remains a clean future add-on (it would
+just open the same SSE endpoint with a user JWT). There is no `dashboard/`
+directory in the repo.
 
-**Features**:
+### 2.6 Virtual device — WEDA-FALL replay simulator
 
-- Multi-device view for caregivers responsible for >1 patient.
-- Event timeline with severity colour-coding.
-- Battery + signal heatmaps.
-- Acknowledgement queue (the dashboard equivalent of the mobile ack flow).
+A standalone tool in [`virtual_device/`](../virtual_device/) that stands in for the
+ESP32-S3 + MPU6050 wristband when no hardware is on the bench. **As built it
+replays real recorded WEDA-FALL trials** rather than synthesising signals — the
+backend is then exercised against the exact distribution the model was trained on:
 
-### 2.6 Virtual device — Python IMU simulator
+1. **Read** a trial's `*_accel.csv` + `*_gyro.csv` straight from `ml/data/raw/WEDA-FALL-main/dataset/50Hz/`.
+2. **Resample to a uniform 50 Hz grid.** The Fitbit Sense's BLE-batched timestamps are non-uniform, so each channel is linearly interpolated (`np.interp`) onto a true 50 Hz time base before slicing — yielding exactly the **125-sample (2.5 s)** window the firmware would emit. Falls are centred on the impact instant (carrying ~1 s of pre-impact lead); ADLs are taken from the middle of the recording.
+3. **Pack** it into the exact §8 `WindowEnvelope` JSON and **POST** it — `emergency` → `POST /v1/inference` (detector confirms/suppresses); `--false-alarm` → `POST /v1/retraining` (canceled false alarm, stored, never detected).
 
-A standalone Python script in `virtual_device/` that emits the same JSON payload schema as the real ESP32 firmware sends to `/v1/inference`. Generates realistic IMU patterns:
-
-- **ADL phases**: sine-wave + noise patterns for walking/sitting/standing.
-- **Fall events**: 3-phase synthesis — free-fall (reduced gravity ~3–6 m/s²) → impact (transient spike to 20–30 m/s²) → post-impact (lying still at ~9.81 m/s² in a new orientation).
-
-Drops into the same backend with zero changes. Lets development proceed without physical hardware, and gives the demo a reliable "fall trigger" button (vs. having to actually drop the device).
+Device auth mirrors the firmware: paste a `--device-token`, run the real `--pair`
+handshake against a DB-backed server, or local-mint with the dev secret for a
+bare `uvicorn`. Because it speaks the identical envelope and two-path routing,
+**anything the simulator can drive, the real watch can drive too** — it lets the
+whole gateway → SSE/FCM → phone path be tested end-to-end with zero hardware, and
+gives the demo a reliable "fall trigger" button.
 
 ---
 
@@ -164,20 +218,27 @@ ESP32 vibrates (haptic warning, ~0 ms)
   ↓
 ESP32 opens HTTPS, streams the triggering window + ~1 s post-impact buffer
   ↓
-FastAPI gateway: validate JWT, validate schema, rate-limit, persist raw
+FastAPI gateway: validate JWT, validate schema, rate-limit
   ↓
-Gateway → ML service: run cloud model on full window
+Gateway runs the cloud model IN-PROCESS (ONNX) on the full window
   ↓
 Cloud confirms (is_fall=true, severity=high) OR cancels (is_fall=false)
   ↓
-If confirmed:
-   ├─ Insert into Postgres `events` table with severity + lead_time
+If confirmed (EventStore.record_fall):
+   ├─ Insert into Postgres `events` (severity, confidence, peak, model_version)
    ├─ Publish on Redis channel `events:user:<id>`
-   │    → Dashboard receives via SSE, alerts caregiver
-   ├─ FCM push to all caregivers' mobile apps
-   ├─ Schedule escalation job (Celery): if not acked in 60 s, SMS
-   └─ Audit log entry
+   │    → app's open SSE stream raises the live alert (FOREGROUND path)
+   └─ Send FCM push to the owner's registered token
+        → OS wakes a BACKGROUND/KILLED app (additive; foreground ignores it)
 ```
+
+**SSE and FCM are additive, never duplicated.** SSE handles the real-time
+foreground stream; FCM handles only the background/killed-app states the SSE
+socket cannot cover, and the app suppresses foreground FCM messages so a single
+fall yields a single alert. Persistence is DB-gated, but **SSE + FCM fire even
+DB-less** — a caregiver must hear about a fall whether or not the row was written.
+(The 60 s ack-escalation / SMS retry queue from the locked design is **not built**;
+acknowledgement clears the alert via §3.3.)
 
 End-to-end latency budget: edge inference <80 ms, network round-trip <500 ms, cloud inference <500 ms, notification fan-out <1 s. From impact peak to caregiver phone notification = **~2 s** when network is good.
 
@@ -185,7 +246,7 @@ End-to-end latency budget: edge inference <80 ms, network round-trip <500 ms, cl
 
 ### 3.3 Acknowledgement
 
-Caregiver taps "I've responded" in the mobile app or dashboard → `POST /v1/events/{id}/acknowledge` → ack inserted into events table → escalation job cancelled → ack visible to other caregivers in real-time via SSE.
+Caregiver taps "I've responded" in the mobile app → `POST /v1/events/{id}/acknowledge` → the event is marked acknowledged in Postgres and the audit log records it. The ack clears the alert on the caregiver's timeline.
 
 ---
 
@@ -196,7 +257,7 @@ Caregiver taps "I've responded" in the mobile app or dashboard → `POST /v1/eve
 | Stage | Model | Job | Where it runs | Input | Constraints |
 |---|---|---|---|---|---|
 | Edge | ConvLSTM-tiny (INT8) | Pre-impact prediction (300–500 ms before ground impact) | TFLite Micro on ESP32-S3 | Raw 6-channel 125-sample window | ≤100 KB · <80 ms · INT8 |
-| Cloud | Transformer encoder (or 1D-CNN→LSTM) | Post-impact confirmation + severity | FastAPI service on Fly.io | 43-dim engineered feature vector | FP32 · MLflow-tracked |
+| Cloud | Transformer encoder | Post-impact confirmation + severity | In-process ONNX in the FastAPI gateway (local) | Raw 125×6 window + 43-dim engineered feature vector | FP32 · 5-fold CV · MLflow-tracked |
 
 ### 4.2 Datasets
 
@@ -300,28 +361,49 @@ Replacing v1/v2's effectively-zero auth posture:
 
 ## 6. Observability
 
-- **Structured JSON logs** with correlation IDs → Better Stack (free tier) for searchable storage
-- **OpenTelemetry traces** across gateway → ML service → Postgres → notifier → Tempo or Honeycomb
-- **Prometheus metrics** scraped by Grafana — p50/p95 latency per endpoint, error rate, model inference time, queue depth
-- **Sentry** for errors with stack traces + breadcrumbs
+As built (Phase 32):
+
+- **Structured JSON logs** to stdout with a **per-request trace ID** (correlation across a request's log lines). See [`observability.py`](../backend/app/observability.py).
+- **Optional Better Stack (Logtail) drain** — when `FG_BETTER_STACK_TOKEN` is set (and the `observability` extra installed) logs ship there in addition to stdout; unset → stdout-only.
+- **Health probes**: `GET /health` (liveness/startup, no dependency I/O) and `GET /health/ready` (readiness — pings Postgres + Redis, reports the loaded `model_version`, returns 503 + "degraded" when a configured dependency is down).
+
+OpenTelemetry traces, Prometheus/Grafana metrics, and Sentry from the locked
+design were **deprioritised** — for a local, single-operator deployment the JSON
+logs + trace IDs + readiness probe are sufficient (see PLAN "Locked Tradeoffs").
 
 The single most important metric to watch in production: **false positives per user per day**. Alert fatigue kills caregiver trust in the system, which is what makes the product fail in the real world even when the academic metrics look great.
 
 ---
 
-## 7. Deployment topology
+## 7. Deployment topology — local-first + ngrok tunnel
 
-| Component | Hosting | Cost tier | Cold-start risk |
-|---|---|---|---|
-| FastAPI gateway | Fly.io (Docker) | Free / hobby | None — Fly keeps a min instance warm |
-| Cloud ML service | Fly.io (separate Dockerfile) | Hobby | Mitigated by min instance |
-| PostgreSQL | Supabase | Free tier | n/a |
-| Redis | Upstash | Free tier | n/a |
-| Caregiver dashboard | Vercel | Hobby | None (static-ish Next.js) |
-| FCM | Firebase | Free tier | n/a |
-| Object storage (for raw windows we keep) | Cloudflare R2 | Free tier (10 GB) | n/a |
+**The locked design's managed cloud (Fly.io gateway + Supabase Postgres + Upstash
+Redis + Vercel dashboard) was dropped.** The shipped system runs entirely on the
+developer's machine, and a **secure ngrok tunnel** exposes it to a *physical*
+phone over public HTTPS. This is the **zero-cost, zero-latency
+production-testing environment**: no monthly bill, no cold-start tax, no deploy
+round-trip — yet a real Android handset talks to the real backend over a real TLS
+URL, which is exactly what FCM and an SSE-over-HTTPS client want.
 
-Cost expectation at hobby scale (≤100 users, ≤10 fall events/day): **$0–10/month**. The cold-start concern that crippled v1/v2 on Render free tier is structurally avoided here (Fly.io min-instances).
+| Component | Where it runs | Notes |
+|---|---|---|
+| FastAPI gateway | Host process — `uvicorn … --host 0.0.0.0 --port 8000` | Serves the ONNX detector in-process (§2.3). |
+| ngrok tunnel | `ngrok http 8000` | Public HTTPS → host `:8000`. The app points `FG_BASE_URL` at the printed `https://<sub>.ngrok-free.app`. |
+| PostgreSQL 16 | Local Docker (`docker-compose.yml`) | System of record; RLS via the `fall_app` role. |
+| Redis 7 | Local Docker (`docker-compose.yml`) | Rate-limit + per-user SSE pub/sub. |
+| FCM | Firebase project `fall-guardian-v3` | Push to a backgrounded/killed app only; service-account JSON in gitignored `backend/.env`. |
+| Cloud detector model | Committed in-repo | Active `model/` + preserved baseline `model_old/` (§2.2). |
+
+**Why ngrok over the LAN-IP path:** a `http://<LAN-IP>:8000` URL works only on the
+same Wi-Fi and is plaintext; the ngrok HTTPS URL works from anywhere and satisfies
+the platform expectations (TLS) that the eventual cloud deploy would also have to
+meet — so the demo path and the production path are the same shape. The reusable
+multi-stage `backend/Dockerfile` and `FG_ENVIRONMENT=production` validator (which
+refuses to boot with the dev JWT secret) remain the seam for a future managed
+re-deploy without re-architecting.
+
+> **Cost expectation: $0/month.** The cold-start concern that crippled v1/v2 on
+> the Render free tier is moot — there is no always-on hosted instance to keep warm.
 
 ---
 
@@ -360,17 +442,18 @@ The field defaults to `emergency`, so existing clients are unaffected. It is pin
 
 ---
 
-## 9. Roadmap snapshot
+## 9. Roadmap snapshot — shipped state
 
-(High-level. Detailed week-by-week build sequence is in the main plan file.)
+(High-level. Detailed week-by-week build sequence + per-phase status is in [`PLAN.md`](PLAN.md).)
 
-- Week A (data foundation) — loader, label derivation, windowing, features, tests. ✅ Done.
-- Week B — edge ConvLSTM-tiny baseline, INT8 quantize, latency benchmark. ✅ Done (96.5% recall on held-out subjects, ~46 KB INT8).
-- **Now — Week C**: cloud Transformer detector + FastAPI gateway + Fly.io deploy. The gateway skeleton + both ingestion paths (`/v1/inference` emergency, `/v1/retraining` canceled-false-alarm capture) are in; the Transformer is next.
-- **Then — Week D**: Flutter rebuild with Riverpod + GoRouter + emergency button + the **local grace period (10 s buzz + Cancel)** + offline.
-- **Then — Week E**: Indian-ADL collection + retraining of both models, including **fine-tuning on collected `CANCELED_FALSE_ALARM` windows / per-user thresholds**.
-- **Then — Week F**: TFLite-Micro deployment to ESP32-S3 (incl. the on-watch grace-period/Cancel UX), Next.js dashboard, observability stack, CI/CD, demo video.
+- **Week A** — data foundation: loaders, pre-impact label derivation, windowing, 43-dim features, tests. ✅
+- **Week B** — edge ConvLSTM-tiny baseline, INT8 quantize, latency benchmark. ✅ (96.5% recall on held-out subjects, ~46 KB INT8).
+- **Week C** — cloud Transformer detector + FastAPI gateway + both ingestion paths (`/v1/inference` emergency, `/v1/retraining` canceled-false-alarm capture). ✅ Detector served in-process as ONNX.
+- **Week D** — stateful backend: async SQLAlchemy + Alembic (8 tables), JWT auth + 8-char pairing, Postgres RLS via `fall_app`, Redis rate limiting, the **SSE caregiver feed**. ✅
+- **Week E** — Flutter rebuild (Riverpod 3): login/register, pairing, live SSE alerts, timeline + acknowledge, **emergency SOS**, calibration onboarding, and **additive FCM** for background/killed apps. ✅
+- **Week F** — ML hardening (**5-fold cross-validated** cloud re-export; baseline kept in `model_old/`), **ESP32-S3 firmware** (TFLite Micro + grace period + BLE pairing), and production-readiness (Docker, GitHub Actions CI, structured logging + readiness probe). ✅
+- **Deployment** — pivoted from managed cloud to **local Docker Compose + ngrok tunnel** (§7); the **virtual device** (§2.6) drives the whole path end-to-end with no hardware.
 
-**Personalization is a core feature, woven across C–E**: the local grace period + the canceled-false-alarm retraining loop let the system learn each user's non-falls. Architecture in §3.2/§8, rationale in ADR-011.
+**Personalization is a core feature**: the local grace period + the canceled-false-alarm retraining loop + per-user calibration let the system learn each user's non-falls. Architecture in §3.2/§4.6/§8, rationale in ADR-011.
 
-Beyond v3.0: edge-only mode (no cloud dependency), more datasets (Geriatric Wrist IMU), federated learning across users, custom PCB form factor.
+Beyond v3.0: the dropped Next.js web dashboard (the SSE endpoint is ready for it), a managed cloud re-deploy off the existing `Dockerfile`, edge-only mode, more datasets (Indian-ADL collection, Geriatric Wrist IMU), federated learning, and a custom PCB form factor.
