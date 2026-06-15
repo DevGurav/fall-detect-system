@@ -23,7 +23,6 @@ scripts/
 .gitignore
 .dockerignore
 Dockerfile
-fly.toml
 # README.md is referenced by pyproject.toml (readme = ...), so it must stay in the
 # context for `pip install .`; ignore other markdown only.
 *.md
