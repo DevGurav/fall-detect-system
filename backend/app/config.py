@@ -55,8 +55,9 @@ class Settings(BaseSettings):
 
     # Better Stack (Logtail) source token for the log drain (Phase 32 observability).
     # When set, structured JSON logs are shipped to Better Stack in addition to
-    # stdout; when unset, stdout JSON + a Fly.io log shipper is the path. Requires
-    # the optional `observability` extra (logtail-python) to actually ship.
+    # stdout; when unset, stdout-only (the local-first default — read the JSON from
+    # the console / `docker compose logs`). Requires the optional `observability`
+    # extra (logtail-python) to actually ship.
     better_stack_token: str | None = None
 
     @property

@@ -1,14 +1,15 @@
 """Health + readiness endpoints (Phase 32).
 
 `GET /health` is the **liveness / startup** probe: it returns 200 as soon as the
-process is up and the app object is wired, with no dependency I/O. Fly.io's
-`grace_period` plus this cheap check is what tells the platform the machine booted.
+process is up and the app object is wired, with no dependency I/O. It's the cheap
+check that says "the process booted" — used by the `Dockerfile` HEALTHCHECK and by
+anything fronting the local gateway (the ngrok tunnel, a future orchestrator).
 
 `GET /health/ready` is the **readiness** probe: it actually exercises the
 configured dependencies (Postgres, Redis) and reports the loaded model. Optional
 infra that isn't configured is reported as "skipped" (still ready); a configured
-dependency that fails to answer flips the response to 503 + "degraded" so the load
-balancer stops routing to a machine that can't serve.
+dependency that fails to answer flips the response to 503 + "degraded" so any
+fronting proxy stops routing to a process that can't serve.
 """
 from __future__ import annotations
 

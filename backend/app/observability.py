@@ -1,10 +1,11 @@
 """Structured logging + per-request trace IDs (Phase 32 observability).
 
 `configure_logging()` wires structlog and the stdlib `logging` root into a single
-sink that emits **one JSON object per line on stdout** — the shape Fly.io's log
-shipper forwards to Better Stack. Both our own `structlog.get_logger()` calls and
-foreign loggers (uvicorn, sqlalchemy) flow through the same `ProcessorFormatter`,
-so there is exactly one log format in production.
+sink that emits **one JSON object per line on stdout** — readable directly from the
+console (or `docker compose logs`) in the local-first setup, and the shape a log
+drain forwards to Better Stack when `FG_BETTER_STACK_TOKEN` is set. Both our own
+`structlog.get_logger()` calls and foreign loggers (uvicorn, sqlalchemy) flow
+through the same `ProcessorFormatter`, so there is exactly one log format.
 
 `TraceIDMiddleware` mints a `trace_id` per request (honouring an inbound
 `X-Request-ID` / `X-Trace-ID` if the caller sets one), binds it into structlog's

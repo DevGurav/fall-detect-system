@@ -2,11 +2,15 @@
 #
 # Fall Guardian cloud gateway — multi-stage build.
 #
-# Build context is this directory (backend/). Deploy with `cd backend && fly deploy`
-# (see fly.toml). The builder resolves dependencies from pyproject.toml — there is
-# no requirements.txt; pyproject is the single source of dependency truth — into an
-# isolated virtualenv, and the slim runtime stage copies only that venv + the app
-# code, so no build toolchain or pip ships in the final image.
+# The system runs local-first (uvicorn on the host + Postgres/Redis from
+# docker-compose.yml, fronted by an ngrok tunnel for a physical phone), so this
+# image is not required to run the project. It is kept for a reproducible build and
+# as the seam for a future managed re-deploy: `cd backend && docker build -t fall-guardian .`
+# then `docker run`. Build context is this directory (backend/). The builder resolves
+# dependencies from pyproject.toml — there is no requirements.txt; pyproject is the
+# single source of dependency truth — into an isolated virtualenv, and the slim
+# runtime stage copies only that venv + the app code, so no build toolchain or pip
+# ships in the final image.
 
 ############################
 # Stage 1 — builder
@@ -51,7 +55,7 @@ RUN apt-get update \
 COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
-# Application code + Alembic (fly.toml's release_command runs `alembic upgrade head`).
+# Application code + Alembic (run `alembic upgrade head` before serving — see RUN.md).
 COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
@@ -68,9 +72,9 @@ RUN mkdir -p /app/ml/artifacts/cloud && chown -R appuser:appuser /app
 USER appuser
 EXPOSE 8080
 
-# In-container liveness check (Fly also probes /health over HTTP — see fly.toml).
+# In-container liveness check (any fronting proxy / orchestrator can also probe /health).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python -c "import os,sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8080')+'/health').status==200 else 1)"
 
-# Honour $PORT (Fly injects it from internal_port); default 8080 for `docker run`.
+# Honour $PORT (set by the host platform if any); default 8080 for `docker run`.
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
