@@ -1,5 +1,10 @@
 # 🚀 Fall Guardian v3: Complete System Architecture & Tech Stack
 
+> **As-built note.** This overview reflects the **shipped** system: a **local-first**
+> deployment (Docker Compose + an ngrok HTTPS tunnel, not a managed cloud), the cloud
+> model served **in-process as ONNX**, the **Flutter app as the sole caregiver client**
+> (the Next.js web dashboard was dropped), and **SSE + additive FCM** alert routing.
+> See `docs/ARCHITECTURE.md` and `docs/DECISIONS.md` ADR-013–018.
 
 ## 1. Edge Hardware & TinyML (The On-Device Brain)
 
@@ -13,7 +18,7 @@
 
 
 
-**ConvLSTM-tiny (INT8 Quantized):** The custom Edge ML model. It processes 50 Hz IMU (accelerometer/gyro) data using 1D-Convolutional layers for spatial features and LSTM units for sequential time-series prediction. It is quantized to INT8 (8-bit integers) to shrink the model size to ~80 KB and achieve sub-80ms inference latency, predicting falls before impact.
+**ConvLSTM-tiny (INT8 Quantized):** The custom Edge ML model. It processes 50 Hz IMU (accelerometer/gyro) data using 1D-Convolutional layers for spatial features and LSTM units for sequential time-series prediction. It is quantized to INT8 (8-bit integers) to shrink the model to **~46 KB** and achieve sub-80 ms inference latency, predicting falls **~256 ms before impact** (measured mean lead time, 96.5% recall). It is **recall-first by design** — it fires often and lets the cloud model suppress the false alarms.
 
 
 
@@ -30,7 +35,7 @@
 
 
 
-**Server-Sent Events (SSE):** A unidirectional real-time protocol. It establishes a live text-event stream to instantly push fall alerts from the backend to the caregiver dashboard, avoiding the heavy overhead and persistent connections required by WebSockets.
+**Server-Sent Events (SSE):** A unidirectional real-time protocol. It establishes a live text-event stream (`GET /v1/events/stream`) to instantly push fall alerts from the backend to the caregiver's **Flutter app while it is in the foreground**, avoiding the heavy overhead of WebSockets. For a backgrounded/killed app, **Firebase Cloud Messaging (FCM)** is the **additive** wake path — never duplicated, because the app ignores foreground FCM (ADR-016).
 
 
 
@@ -39,7 +44,7 @@
 
 
 
-**JWT (JSON Web Tokens) & Authlib:** Implements stateless authentication, issuing short-lived access tokens and per-device JWTs that are securely stored in the ESP32's encrypted NVS (Non-Volatile Storage) partition.
+**JWT (JSON Web Tokens) via PyJWT + bcrypt:** Implements stateless authentication, issuing short-lived per-user access tokens (with refresh-token rotation) and separate per-device JWTs that are securely stored in the ESP32's encrypted NVS (Non-Volatile Storage) partition. Passwords are bcrypt-hashed.
 
 
 
@@ -56,7 +61,7 @@
 
 
 
-**PostgreSQL 16 (via Supabase):** The primary relational database. It acts as the permanent system of record for users, devices, calibration profiles, and historical event timelines.
+**PostgreSQL 16 (local Docker):** The primary relational database, run from `docker-compose.yml` on the host. It is the permanent system of record for users, devices, calibration profiles, FCM push tokens, retraining windows, the audit log, and historical event timelines. (The original Supabase plan was dropped with the move to local-first — ADR-017.)
 
 
 
@@ -90,15 +95,15 @@
 
 
 
-**ONNX Runtime (Open Neural Network Exchange):** Used to export the heavy PyTorch models into a highly optimized, hardware-agnostic format, allowing for lightning-fast, CPU-bound inference in the FastAPI production cloud gateway.
+**ONNX Runtime (Open Neural Network Exchange):** Used to export the trained PyTorch model into a portable format served **in-process inside the FastAPI gateway** (CPU provider) — fast, torch-free CPU inference with no separate model service (ADR-015). The active artifact is the **5-fold cross-validated** export; the prior Phase-20 baseline is preserved at `backend/app/model_old/` for one-line rollback/A-B via `FG_MODEL_PATH` (ADR-018).
 
 
 
-**Transformer Encoder Architecture:** The cloud-side AI that receives the 2.5-second telemetry window triggered by the edge device. It processes sliding-window classifications to confirm true falls and suppress false alarms (ADLs), targeting a False Positive Rate of ≤ 0.5 per day.
+**Transformer Encoder Architecture:** The cloud-side AI that receives the 2.5-second telemetry window triggered by the edge device, fused with a 43-dim engineered feature vector. It confirms true falls and suppresses false alarms (ADLs): standalone cloud recall ≈ 0.97 (5-fold OOF), and the **edge→cloud cascade drives the joint ADL false-positive rate to ≈ 0.7%**. The ≤ 0.5-alarms/day continuous-wear figure is scripted and still owed a literal pass.
 
 
 
-**MLflow & DVC:** MLOps tools used as a "digital lab notebook" to track experiment iterations, log hyperparameter changes, and version datasets.
+**MLflow (+ Google Colab for GPU):** MLOps "digital lab notebook" tracking experiment iterations, hyperparameters, and metrics. Heavy training / 5-fold cross-validation scripts are written locally and executed on Colab's GPU ("write now, run later").
 
 
 
@@ -107,28 +112,24 @@
 
 
 
-**Flutter 3.x:** A cross-platform UI toolkit used to build the iOS and Android companion app from a single codebase, featuring full bilingual support (English/Hindi).
+**Flutter 3.35 / Dart 3.9:** A cross-platform UI toolkit used to build the Android (and iOS-capable) companion app from a single codebase. This is the **sole caregiver client** — it covers login/registration, device pairing, calibration onboarding, the live alert feed, the event timeline + acknowledge, and the manual emergency SOS.
 
+**Riverpod 3:** Manages complex, reactive application state (the SSE connection status, the live event feed, auth). Navigation is plain Flutter routing — a declarative router and an offline DB (Drift) were evaluated and **deprioritised** as résumé-driven over-engineering; the SSE reconnect loop + pull-to-refresh cover the real cases.
 
-
-**Riverpod 2 & GoRouter:** Riverpod manages complex, reactive application state, while GoRouter handles declarative, deep-linkable navigation screens.
-
-
-
-**Drift (SQLite):** An offline-first local database layer. It queues user actions and telemetry locally if the phone loses internet, automatically syncing with the cloud once connectivity is restored.
+**Hand-rolled SSE consumer + FCM (`firebase_messaging`):** A ~150-line `FallEventService` over `package:http` owns reconnect/backoff/jitter and a keepalive **watchdog** for half-open sockets (ADR-012). **FCM** is wired as the **additive** background/killed-app wake path (ADR-016); `flutter_secure_storage` holds the JWTs.
 
 
 
 
-## 8. Caregiver Web Dashboard (The Command Center)
+## 8. Caregiver Web Dashboard — DROPPED (ADR-014)
 
-
-
-**Next.js 16 & TypeScript:** A React-based web framework utilizing strict typing to build a multi-device web dashboard. It continuously consumes the SSE feed to display real-time event timelines.
-
-
-
-**Tailwind v4:** A utility-first CSS framework used for rapid UI development and ensuring responsive, accessible design across all screen sizes.
+The planned Next.js 16 + TypeScript + Tailwind v4 web dashboard was **not built**.
+For an emergency alert the right form factor is a phone in a pocket, not a browser
+tab, and the **Flutter app (§7) covers the caregiver completely** — so that build
+time went to the on-device firmware (the actual differentiator) instead. The
+gateway's SSE endpoint is transport-agnostic, so a web dashboard remains a clean
+future add-on (open the same `GET /v1/events/stream` with a user JWT). There is no
+`dashboard/` directory in the repo.
 
 
 
@@ -137,11 +138,9 @@
 
 
 
-**Docker & Docker Compose:** Containerization tools that package the FastAPI app, Postgres DB, and Redis into isolated microservices. This guarantees the application runs identically on a local laptop and the production server.
+**Docker & Docker Compose:** `docker-compose.yml` brings up Postgres 16 + Redis 7 locally; the FastAPI app runs on the host and is exposed to a physical phone through a **secure ngrok HTTPS tunnel** to port 8000 — a **zero-cost, zero-latency** production-testing path (ADR-017). A multi-stage `backend/Dockerfile` is kept for reproducible builds and as the seam for a future managed re-deploy; the `FG_ENVIRONMENT=production` validator refuses to boot with the dev JWT secret.
 
-
-
-**GitHub Actions:** The CI/CD (Continuous Integration/Continuous Deployment) pipeline. It automatically triggers on every code push to run linting rules (ruff), security audits (bandit, snyk), and unit tests before deploying the Docker image to the cloud.
+**GitHub Actions:** The CI pipeline (`.github/workflows/ci.yml`) triggers on every push to run **ruff** lint + **pytest** (backend) + an **Alembic migration check** + **flutter test** (mobile). It gates PRs on green checks. There is **no auto-deploy** — the system is local-first by design.
 
 
 
@@ -150,12 +149,12 @@
 
 
 
-**Better Stack:** Aggregates structured JSON logs, allowing for fast, queryable debugging of the backend in production.
+**Structured JSON logging + per-request trace IDs:** Every request's log lines share a trace ID for correlation (`backend/app/observability.py`).
 
+**Better Stack (optional log drain):** When `FG_BETTER_STACK_TOKEN` is set, the JSON logs ship to Better Stack in addition to stdout; unset → stdout-only.
 
+**Health + readiness probes:** `GET /health` (liveness, no I/O) and `GET /health/ready` (pings Postgres + Redis, reports the loaded `model_version`, 503 when degraded).
 
-**OpenTelemetry & Tempo:** Implements distributed tracing to measure exactly how many milliseconds a request spends in the database, the rate-limiter, or the ML model.
-
-
-
-**Sentry:** Captures unhandled exceptions and application crashes, instantly alerting the developer to production bugs.
+> OpenTelemetry/Tempo distributed tracing and Sentry were **deprioritised** for a
+> local, single-operator deployment — the JSON logs + trace IDs + readiness probe
+> are sufficient (see PLAN "Locked Tradeoffs").

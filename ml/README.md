@@ -42,17 +42,39 @@ ml/
 
 | Stage | Model | Datasets | Constraints |
 |---|---|---|---|
-| Edge | ConvLSTM-tiny (INT8) | **WEDA-FALL** (pre-impact labels re-derived from fall_timestamps.csv) | ≤ 100 KB · <80 ms inference · INT8 quantized |
-| Cloud | Transformer encoder (alt CNN-LSTM) | **WEDA-FALL** + **SmartFall** + **Indian-ADL** | FP32 · full FastAPI service |
+| Edge | ConvLSTM-tiny (INT8) | **WEDA-FALL** (pre-impact labels re-derived from fall_timestamps.csv) | ≤ 100 KB · <80 ms inference · INT8 quantized → TFLite Micro |
+| Cloud | Transformer encoder | **WEDA-FALL** + **SmartFall** (hard negatives) | FP32 → exported to **ONNX**, served in-process in the gateway (ADR-015) |
 | Generalization test | both | **UP-Fall** wrist channel | held-out cross-device evaluation |
 
+> **Indian-ADL was dropped** (ADR-013) in favour of per-user fit-at-first
+> calibration — the model personalises to each user's own ADL distribution at
+> onboarding rather than training on one collected corpus.
+
 Both models share the same sliding-window feature extraction. See `features/` for the shared pipeline.
+
+## Export + hardening (Phase 30/31)
+
+```bash
+# Cloud: 5-fold subject-stratified CV → retrain → export ONNX for the gateway
+uv run python -m fall_guardian_ml.training.cross_validate     # fold-averaged PR threshold
+uv run python scripts/export_cloud_onnx.py                    # → backend/app/model/cloud_detector.onnx (+ .meta.json)
+uv run python scripts/cascade_eval.py                         # edge→cloud joint FPR on held-out
+uv run python scripts/continuous_wear_sim.py                  # alarms-per-day simulation
+
+# Edge: INT8 TFLite + C header for the firmware (needs a Linux toolchain — see edge/README.md)
+python scripts/export_tflite.py                               # → convlstm_tiny_int8.tflite
+python scripts/tflite_to_header.py                            # → edge/include/model.h
+python scripts/validate_tflite.py                             # round-trip vs the FP32 checkpoint
+```
+
+> The active cloud model is the **5-fold CV** export; the prior Phase-20 baseline is
+> preserved at `backend/app/model_old/` for diff / rollback (ADR-018).
 
 > **Pre-impact label re-derivation** — WEDA-FALL labels fall *windows*, not the impact *instant*. We programmatically detect the impact peak (`argmax |a|` within the labeled window) and define PRE_IMPACT / IMPACT / POST_IMPACT phases around it. See [`DATA.md`](DATA.md) for the algorithm + validation methodology.
 
 ## Honest metrics — the validation contract
 
-- **Subject-stratified k-fold CV** — implemented in `training/cv.py`. Never train and test on the same subject.
+- **Subject-stratified k-fold CV** — implemented in `training/cross_validate.py` (5-fold, fold-averaged PR threshold). Never train and test on the same subject.
 - **Held-out test subjects** — 20% of subject IDs reserved across the entire run.
 - **Metrics published**: precision, recall, F1, **FPR on ADL**, confusion matrix, **lead-time histogram** (prediction model), ROC + AUC.
 - **Calibration**: Platt-scaling / isotonic in `eval/calibration.py`.
@@ -67,6 +89,6 @@ Both models share the same sliding-window feature extraction. See `features/` fo
 | Edge mean lead time | ≥ 300 ms |
 | Edge model size (INT8) | ≤ 100 KB |
 | Cloud recall on WEDA-FALL + SmartFall held-out subjects | ≥ 97% |
-| Cloud FPR on ADL (incl. Indian-ADL) | ≤ 2% |
+| Cloud FPR on ADL | ≤ 2% |
 | Cross-dataset gen. (UP-Fall wrist) | recall drop ≤ 10 pp from primary |
 | End-to-end pipeline FP rate | ≤ 0.5/day in continuous-wear simulation |

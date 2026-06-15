@@ -59,7 +59,14 @@ Tracking sheet for the licence terms + attribution requirements of every dataset
 
 ---
 
-### 1.4 Indian-ADL — collected by the project
+### 1.4 Indian-ADL — collected by the project — DROPPED (ADR-013)
+
+> **Not collected.** The Indian-ADL collection was **dropped at the mid-build audit**
+> in favour of per-user fit-at-first calibration (ADR-013): the system captures each
+> user's own ADL distribution at onboarding instead of training on one collected
+> corpus. No subjects were recorded, so the licence/consent action items below did
+> not execute. The row is retained for provenance and in case collection is ever
+> revived. The licence intent (CC BY 4.0) would still apply if it were.
 
 | Field | Value |
 |---|---|
@@ -98,7 +105,7 @@ Before tagging any public release (e.g., `v3.0.0`):
 - [ ] Each citation appears in the project README and the relevant model-card section
 - [ ] Trained model artefacts ready for redistribution have licence-compatibility cleared
 - [ ] If any dataset prohibits derivative-work redistribution, the affected models are clearly marked as "not for redistribution"
-- [ ] Indian-ADL consent forms are filed offline; subject ledger is up to date
+- [x] Indian-ADL consent forms — **N/A**: collection dropped (ADR-013), no subjects recorded
 - [ ] No raw dataset files committed to the repo (`.gitignore` enforces this)
 - [ ] BibTeX entries in `ml/DATA.md` reflect the canonical citations
 

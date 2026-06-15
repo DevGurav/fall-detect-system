@@ -98,7 +98,7 @@ For the chronological story of how these decisions emerged, see [`BUILD_LOG.md`]
 
 ## ADR-005 — Target user: elderly living alone, Indian context
 
-**Status**: Accepted (2026-05-31)
+**Status**: Accepted (2026-05-31). **The Indian-ADL *data-collection* requirement below is superseded by ADR-013** (per-user calibration); the Indian-context *targeting* still stands.
 
 **Context.** Fall-detection products span several user groups: elderly at home (Phillips Lifeline, Apple Watch fall alert), post-op patients, construction workers, athletes. Each has a different ADL distribution that the model has to NOT misclassify as a fall.
 
@@ -203,11 +203,11 @@ Hoping that domain adaptation across body positions saves a wrist model trained 
 
 ## ADR-009 — Monorepo structure
 
-**Status**: Accepted (2026-05-30)
+**Status**: Accepted (2026-05-30). **The `dashboard/` sub-project is dropped by ADR-014**; the monorepo decision itself stands.
 
 **Context.** v3 spans ML training, Python backend, Flutter mobile, Next.js dashboard, ESP32 firmware, and a Python virtual device. Code organisation: monorepo or polyrepo?
 
-**Decision.** Monorepo. Single GitHub repo with sub-projects: `ml/`, `backend/`, `mobile/`, `dashboard/`, `edge/`, `virtual_device/`, `docs/`.
+**Decision.** Monorepo. Single GitHub repo with sub-projects: `ml/`, `backend/`, `mobile/`, `dashboard/`, `edge/`, `virtual_device/`, `docs/`. *(As built, the `dashboard/` sub-project was never created — see ADR-014.)*
 
 **Alternatives considered.**
 
@@ -288,3 +288,132 @@ Hoping that domain adaptation across body positions saves a wrist model trained 
 - The UI is transport-agnostic: it consumes a `Stream<FallEvent>` + a `Stream<SseStatus>`, so adding the FCM producer later is additive — zero screen changes.
 - Some resilience code (watchdog / backoff) is ours to maintain, but it's unit-testable and isolated to one file.
 - A standing gap until the next slices: no JWT yet (the service idles `unauthorized` until the login flow lands) and no true background delivery (foreground / active only). Both are recorded in BUILD_LOG Phase 28's queue.
+
+---
+
+## ADR-013 — Drop the Indian-ADL dataset; personalise per-user instead (fit-at-first calibration)
+
+**Status**: Accepted (2026-06-09, the mid-build audit). **Supersedes the Indian-ADL data-collection requirement in ADR-005.**
+
+**Context.** ADR-005 made a custom Indian-ADL dataset the project's "originality angle": record ~60–100 minutes of Indian-specific activities (sukhasana, namaste, getting up from the floor, squat-toilet) so the model wouldn't misread them as falls. By the mid-build reckoning two things were true: (1) collecting, labelling, and validating a multi-subject dataset is a real sub-project competing with the firmware for the remaining time, and (2) a *better* mechanism already existed in the system — the per-user calibration seam (ADR-011, Phase 24) plus the canceled-false-alarm loop.
+
+**Decision.** Drop the Indian-ADL collection. Replace it with **per-user fit-at-first calibration**: a ~10–15 min onboarding session where a new user simply wears the device, capturing *their own* ADL distribution (including whatever Indian-specific motions they personally do) as z-score normalisers + a threshold override applied at inference. The reserved synthetic-ADL engine is dropped for the same reason.
+
+**Alternatives considered.**
+
+- *Collect the dataset as planned* — strong "I collected original data" line, but a single averaged dataset is weaker than a model that fits each individual, and it costs time the firmware needs more.
+- *Collect a smaller token dataset* — the worst of both: still a sub-project, still only an average.
+- *Do both* — out of scope solo.
+
+**Consequences.**
+
+- The originality moves from "a dataset I collect once" to "a model that personalises to everyone" — a stronger product *and* a better story.
+- FPR reduction on Indian-context motions now rides on calibration (ADR-011) + the 5-fold/SmartFall hardening (ADR-018), not on a bespoke corpus.
+- `ml/DATA.md` §4 and `MODEL_CARD.md` §4.3 keep the Indian-ADL description but mark it superseded by this ADR; `DATA_LICENSES.md` §1.4's collection action items are retired.
+
+---
+
+## ADR-014 — Drop the Next.js caregiver web dashboard; the Flutter app is the sole caregiver client
+
+**Status**: Accepted (2026-06-09, the mid-build audit). **Supersedes the `dashboard/` sub-project in ADR-009.**
+
+**Context.** The locked design paired the Flutter app with a Next.js web dashboard (multi-device view, timeline, ack queue) consuming the same SSE feed. For an *emergency* alert, the right form factor is a phone in a pocket, not a browser tab — and the Flutter app already covers the caregiver completely.
+
+**Decision.** Drop the web dashboard outright. The Flutter app is the only caregiver client. The gateway's `GET /v1/events/stream` stays transport-agnostic, so a web dashboard remains a clean future add-on (open the same SSE endpoint with a user JWT) without committing build time now.
+
+**Alternatives considered.**
+
+- *Build a minimal dashboard* — still a second UI to design, test, and keep in sync; the time belongs to the firmware (the actual differentiator).
+- *Replace the app with a dashboard* — wrong form factor for a fall alert.
+
+**Consequences.**
+
+- No `dashboard/` directory is created; ADR-009's layout is updated to note this.
+- `ARCHITECTURE.md` §2.5 and `PRIVACY.md` §13 (cookies) are updated to reflect "no web client."
+- All caregiver features (live alerts, timeline, acknowledge, manual SOS) are delivered in the app.
+
+---
+
+## ADR-015 — Serve the cloud detector in-process as ONNX (no separate PyTorch inference service)
+
+**Status**: Accepted (2026-06-02; export path hardened in Phase 30)
+
+**Context.** The locked design (ARCHITECTURE §2.3 draft) imagined a separate, independently-scalable PyTorch inference service reached over an internal RPC. In practice the gateway is a single FastAPI process and the model is small.
+
+**Decision.** Export the trained Transformer to **ONNX** and serve it **in-process** inside the gateway via `onnxruntime` (CPU provider); numpy does the preprocessing. The backend carries **no torch dependency**. The committed artifact (`backend/app/model/cloud_detector.onnx` + `.meta.json`) is loaded at startup by `CloudDetector`, which falls back to a transparent peak-acceleration stub if no artifact is present.
+
+**Alternatives considered.**
+
+- *Separate PyTorch RPC service* — independently scalable, but adds a network hop, a second container, and a torch runtime for a model that runs in milliseconds on CPU. Kept as a future upgrade path if load demands it.
+- *TorchServe / Triton* — operational weight unjustified at this scale.
+
+**Consequences.**
+
+- One process, one deploy; the model is a diffable, version-pinned in-repo artifact (see ADR-018).
+- The training stack stays PyTorch; ONNX is the serving boundary, so train/serve skew is limited to the documented preprocessing (shared `extract_features`).
+- `MODEL_CARD.md` §1.1 and `ARCHITECTURE.md` §2.3/§4.1 updated from "FastAPI service on Fly.io, PyTorch" to "in-process ONNX (local)."
+
+---
+
+## ADR-016 — Additive alert routing: SSE for foreground, FCM for background/killed
+
+**Status**: Accepted (2026-06-06, foreshadowed in ADR-012; backend side Phase 28b)
+
+**Context.** The SSE feed (ADR-012, Phase 27) delivers sub-second alerts only while the app process is alive. A fall-detection app's whole point is reaching a caregiver whose phone is in their pocket, screen off — or whose app the OS has killed. FCM can wake a terminated app; SSE cannot. Running both naively would double every alert.
+
+**Decision.** Use the two channels **additively, never redundantly**. On a confirmed fall (and manual SOS), `EventStore` publishes to the owner's per-user Redis channel for **SSE** *and* dispatches an **FCM** push to the registered token. The mobile client treats **SSE as the source of truth in the foreground and deliberately ignores foreground FCM messages**, so a fall yields exactly one alert. FCM covers only the background/killed states SSE can't. FCM is gated on `FG_FIREBASE_CREDENTIALS`; unset → SSE-only, no crash. The app registers its token via `PUT /v1/users/me/push-token`.
+
+**Alternatives considered.**
+
+- *FCM-only* — wakes a killed app but makes the foreground depend on Google round-trips and loses the sub-second live feed. Rejected (see ADR-012).
+- *SSE-only* — clean foreground, but a pocketed/killed phone never hears the alert. Unacceptable for a safety product.
+- *Both, ungated* — duplicate alerts; erodes trust. The foreground-FCM-suppression rule is the fix.
+
+**Consequences.**
+
+- A single fall produces a single caregiver alert regardless of app state.
+- Both SSE and FCM fire even when the gateway is DB-less — an alert must reach a caregiver whether or not the row was persisted.
+- The terminated-state gap called out at the end of BUILD_LOG Phase 28 is closed.
+
+---
+
+## ADR-017 — Local-first deployment via an ngrok tunnel (managed cloud deferred)
+
+**Status**: Accepted (2026-06-13/15). **Supersedes the Fly.io / Supabase / Upstash / Vercel deployment in the original ARCHITECTURE §7.**
+
+**Context.** The locked design deployed to Fly.io (gateway, `bom` region), Supabase (Postgres), Upstash (Redis), and Vercel (dashboard). Phase 32 first built the Fly.io path (`a05d0a7`), then it was removed (`56c934e`, `acb65dc`): for a single-operator portfolio system, a managed cloud added a monthly bill, account/secret management, and a deploy round-trip without changing what a reviewer sees.
+
+**Decision.** Run **local-first**: the gateway on the host (`uvicorn … --port 8000`) with Postgres + Redis from the repo `docker-compose.yml`. Expose it to a **physical phone** through a **secure ngrok HTTPS tunnel** to port 8000 — a public TLS URL at **zero cost and zero added latency** (the tunnel just forwards to the host). The multi-stage `backend/Dockerfile` and the `FG_ENVIRONMENT=production` JWT-secret validator are kept as the seam for a future managed re-deploy.
+
+**Alternatives considered.**
+
+- *Keep Fly.io/Supabase* — a live URL is a nice portfolio line, but the cost/ops overhead isn't justified solo, and the cold-start sin it was meant to fix simply doesn't exist with no hosted instance.
+- *LAN-IP only (`http://<ip>:8000`)* — works for the emulator and same-Wi-Fi phones but is plaintext and local-network-bound; ngrok's HTTPS also satisfies the FCM/TLS expectation the eventual cloud deploy would face, so the demo and production paths share a shape.
+
+**Consequences.**
+
+- $0/month; nothing leaves the laptop except FCM tokens (Google) and traffic transiting the ngrok tunnel.
+- `ARCHITECTURE.md` §7, `RUN.md`, `PRIVACY.md` (§7.1/§8/§12), and the dir READMEs updated to local + ngrok; the Fly.io config is removed from the repo.
+- A managed re-deploy remains one Dockerfile away — no re-architecture needed.
+
+---
+
+## ADR-018 — 5-fold cross-validated re-export + SmartFall hard negatives; preserve the baseline model
+
+**Status**: Accepted (2026-06-11/14, Phase 30)
+
+**Context.** Week C shipped the cloud detector honest about a 5.0% ADL FPR (target ≤2%), driven by impact-like ADLs (clapping, hit-table, jump). Two levers were identified to close it: a more stable decision threshold from full subject-stratified k-fold CV, and folding SmartFall's real-world activity in as **hard negatives**. Serious training needs a GPU not available on the dev laptop.
+
+**Decision.** Adopt a **write-now-run-later** rhythm: author the 5-fold cross-validation wrapper (`ml/src/fall_guardian_ml/training/cross_validate.py`) and the cloud retrain locally, structured to run on Google Colab's GPU. Re-export the resulting model to ONNX (`ml/scripts/export_cloud_onnx.py`) into `backend/app/model/`, and **preserve the prior Phase-20 baseline verbatim** under `backend/app/model_old/` so it can be diffed, A/B-tested (`FG_MODEL_PATH`), or rolled back without git archaeology. Add `cascade_eval.py` and a `continuous_wear_sim.py` for the per-day alarm metric.
+
+**Alternatives considered.**
+
+- *Keep tuning on a single val split* — the cross-subject variance is exactly what inflates threshold uncertainty; single-split is what this fixes.
+- *Overwrite the baseline in place* — loses the ability to compare against the pre-CV model; a model is the kind of artifact worth keeping a labelled previous version of.
+- *MLflow-registry-only rollback* — works for training, but an in-repo `model/` ⇄ `model_old/` split gives a one-line serving rollback with no registry round-trip.
+
+**Consequences.**
+
+- The active served model is the 5-fold CV export; `model_old/` is the immutable baseline (see `MODEL_CARD.md` §3.2/§8, `backend/README.md`).
+- The continuous-wear ≤0.5 alarms/day number is scripted; per `MODEL_CARD.md` §3.2 it is still owed a literal pass on a realistic activity mix (the per-window cascade FPR of 0.7% is on an adversarial impact-heavy set).
+- INT8 TFLite export for the edge (`export_tflite.py` → `tflite_to_header.py`, validated by `validate_tflite.py`) is gated on a Linux toolchain (ADR notes in BUILD_LOG Phase 31).

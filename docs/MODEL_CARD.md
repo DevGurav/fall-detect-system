@@ -2,7 +2,7 @@
 
 A single card covering both ML components of the system: the on-device **Edge Predictor** (pre-impact fall prediction) and the cloud **Detector** (post-impact fall classification + severity). The card follows the structure popularised by Mitchell et al. (2019), adapted for a two-model system.
 
-This card is a **living document**. Sections marked *"To be populated at training time"* will be filled in as each Week-B / Week-C / Week-E milestone produces real metrics. Until then, *target* numbers from the project plan stand in for measured ones — clearly labelled.
+This card is a **living document**. Both models are now **trained and shipped** — the edge ConvLSTM-tiny (INT8) and the cloud Transformer (re-exported under 5-fold cross-validation, Phase 30). Measured metrics are in §3.2; the §3.1 targets are kept for comparison. A handful of slice-level breakdowns remain *"To be populated."*
 
 ---
 
@@ -13,14 +13,14 @@ This card is a **living document**. Sections marked *"To be populated at trainin
 | Aspect | Edge Predictor | Cloud Detector |
 |---|---|---|
 | Role | Pre-impact prediction (alert ~300–500 ms before ground impact) | Post-impact detection (confirm/suppress edge prediction + assign severity) |
-| Where it runs | ESP32-S3 wearable, TFLite Micro INT8 | FastAPI service on Fly.io, PyTorch FP32 |
+| Where it runs | ESP32-S3 wearable, TFLite Micro INT8 | In-process **ONNX** in the FastAPI gateway (local); trained in PyTorch FP32 (ADR-015) |
 | Architecture | ConvLSTM-tiny | Transformer encoder over the raw window + fused engineered features (alt: 1D-CNN → LSTM hybrid) |
 | Input | Raw 6-channel window (125 samples × {ax, ay, az, wx, wy, wz}) at 50 Hz | Raw 125×6 window **and** the fused 43-dim engineered feature vector |
 | Output | `P(pre-impact fall) ∈ [0, 1]` | `P(fall) ∈ [0, 1]` (binary: IMPACT+POST_IMPACT vs not) + severity scalar |
 | Size budget | ≤100 KB INT8 | unconstrained (FP32) |
 | Latency budget | <80 ms on ESP32-S3 | <500 ms end-to-end |
-| Versioning | semver, MLflow-tracked | semver, MLflow-tracked |
-| Status (this card) | **Not trained yet** — architecture locked, training scheduled Week B | **Trained + served** — WEDA-FALL, recall 0.970 (OOF); served as ONNX in the gateway (stub retired); cascade FPR 0.7%; continuous-wear /day sim pending |
+| Versioning | semver, MLflow-tracked | semver, MLflow-tracked; active export + preserved baseline in-repo (ADR-018, §8) |
+| Status (this card) | **Trained + INT8-quantized** — WEDA-FALL, recall 0.965, 256 ms mean lead, ~46 KB; firmware integration in `edge/` (Phase 31) | **Trained + served** — WEDA-FALL, recall 0.970 (5-fold OOF); served in-process as ONNX (stub retired); cascade FPR 0.7%; re-exported under 5-fold CV (Phase 30); continuous-wear /day sim still owed |
 
 ### 1.2 Edge Predictor architecture (locked)
 
@@ -77,7 +77,7 @@ to be compared on held-out WEDA-FALL (+ later SmartFall) subjects.
 
 ### 2.1 Primary intended use
 
-Real-time fall safety monitoring for **elderly users (Indian-context primary)** wearing the Fall Guardian wrist device in their home environment. When a fall is predicted/detected the system alerts a registered caregiver via the Fall Guardian mobile app + (optional) SMS, with an escalation path if the alert is not acknowledged within 60 seconds.
+Real-time fall safety monitoring for **elderly users (Indian-context primary)** wearing the Fall Guardian wrist device in their home environment. When a fall is predicted/detected the system alerts a registered caregiver via the Fall Guardian mobile app — live over SSE while the app is open, and via an additive FCM push when it is backgrounded/killed (ADR-016). (The 60 s ack-escalation / SMS path from the original plan is not built; the caregiver acknowledges from the timeline.)
 
 ### 2.2 Out-of-scope uses
 
@@ -97,7 +97,7 @@ Real-time fall safety monitoring for **elderly users (Indian-context primary)** 
 
 ## 3. Performance
 
-### 3.1 Target metrics (project plan, NOT yet measured)
+### 3.1 Target metrics (project plan — compare against the measured numbers in §3.2)
 
 | Metric | Edge Predictor target | Cloud Detector target |
 |---|---|---|
@@ -184,14 +184,23 @@ See `docs/AUDIT_v1_v2.md` for why v1/v2's synthetic-only training data was rejec
 - **Use**: ADL augmentation for the cloud detector — hardens FPR on natural elderly activity
 - **Gyro handling**: zero-padded when feeding SmartFall windows through the cloud feature extractor (acknowledged limitation; per-slice FPR for SmartFall-augmented runs reported separately)
 
-### 4.3 Indian-ADL supplement (collected by the project)
+### 4.3 Indian-ADL supplement — DROPPED (superseded by per-user calibration, ADR-013)
 
-- **Source**: collected by the project (Week E)
-- **Modality**: wrist-worn, via the Python virtual device + real ESP32 wristband when available
-- **Sample rate**: 50 Hz (matches WEDA-FALL)
-- **Subjects**: project author + family/friends (target 5–10 subjects, ages 25–75)
-- **Activities (NEGATIVE examples; no falls collected)**: sukhasana (cross-legged floor sit), namaste / prayer poses, getting up from floor, squat-toilet posture, intentional wrist motions (eating with hand, waving, brushing teeth, opening doors)
-- **Purpose**: cover the Indian-context activities absent from public datasets; reduce FPR specifically on these motions
+> **Not collected.** The planned Indian-ADL corpus (sukhasana, namaste, getting up
+> from the floor, squat-toilet, intentional wrist motions) was **dropped at the
+> mid-build audit** in favour of **per-user fit-at-first calibration** (ADR-013):
+> a ~10–15 min onboarding session captures each user's *own* ADL distribution —
+> including whatever Indian-specific motions they personally do — as z-score
+> normalisers + a threshold override, applied at inference (§4.6). Personalising to
+> each individual beats averaging one collected dataset. The Indian-context FPR is
+> therefore addressed by calibration (ADR-011) plus the 5-fold/SmartFall hardening
+> (ADR-018), not by a bespoke corpus. The original collection spec is retained below
+> for provenance.
+>
+> *Original spec (not executed):* wrist-worn, 50 Hz, 5–10 subjects (ages 25–75),
+> NEGATIVE examples only — sukhasana, namaste, floor rise, squat-toilet, eating/
+> waving/brushing/door motions — to cover Indian-context activities absent from
+> public datasets.
 
 ### 4.4 Cross-dataset evaluation corpus — UP-Fall wrist channel
 
@@ -278,7 +287,7 @@ The mobile app must communicate to the user + caregiver that:
 
 ## 7. Caveats and limitations
 
-- **Not yet trained.** This card describes a designed, not-yet-evaluated system. Numbers in §3.1 are targets; §3.2 is empty until Week B/C training runs land.
+- **Continuous-wear /day metric still owed.** Both models are trained and the measured numbers are in §3.2, but the headline ≤0.5 alarms/user/day figure is not yet a literal pass — the 0.7% cascade FPR is per-window on an adversarial impact-heavy ADL set; the realistic-mix `continuous_wear_sim.py` run is queued (ADR-018).
 - **Wrist position dependency.** Performance is only evaluated on wrist-mounted data. The model will perform poorly on waist/chest/ankle deployment.
 - **Sampling-rate dependency.** Resampling to 50 Hz is a hard assumption in the pipeline. Devices that sample at substantially different rates will need a different feature pipeline (UP-Fall at 18 Hz is the test case for low-rate degradation).
 - **Indian-ADL coverage is project-author's curation.** The original-content nature of the Indian-ADL supplement is a strength (originality) and a limitation (small sample, limited subject diversity). Future work should expand subject pool.
@@ -288,10 +297,10 @@ The mobile app must communicate to the user + caregiver that:
 
 ## 8. Versioning + provenance
 
-- Model versions follow **semantic versioning** (`edge-vMAJOR.MINOR.PATCH`, `cloud-vMAJOR.MINOR.PATCH`).
-- Every trained model is logged to the MLflow registry with: training script git hash, dataset checkpoint hash (DVC), hyperparameters, evaluation metrics, confusion matrix + ROC artifacts.
-- Rollback to any prior registered model is a single MLflow CLI call.
-- The deployed model's version is exposed on the FastAPI `/health` endpoint for traceability.
+- Model versions follow **semantic versioning** (`edge-vMAJOR.MINOR.PATCH`, `cloud-vMAJOR.MINOR.PATCH`); the served `model_version` is read from the ONNX `.meta.json`.
+- Every trained model is logged to the MLflow registry with: training script git hash, hyperparameters, evaluation metrics, confusion matrix + ROC artifacts.
+- **In-repo serving + rollback (ADR-018).** The active export lives at `backend/app/model/cloud_detector.onnx` (+ `.meta.json`); the prior **Phase-20 baseline is preserved verbatim** at `backend/app/model_old/`. Rollback / A-B is a one-line `FG_MODEL_PATH` override — no registry round-trip. The active model is the **5-fold cross-validated** re-export (Phase 30).
+- The served model's version is exposed on the FastAPI `/health` (and `/health/ready`) endpoint for traceability; a missing artifact falls back to the labelled `stub-0.0` heuristic.
 
 ---
 
@@ -311,4 +320,4 @@ If this work is referenced in academic or industry publications, please cite the
 
 ---
 
-*Model Card v0 — drafted 2026-05-31, prior to first training run. Will be updated as Week B (Edge Predictor training) and Week C (Cloud Detector training) produce measured metrics.*
+*Model Card — drafted 2026-05-31 (pre-training); updated through Phase 30 with measured metrics for both shipped models (edge ConvLSTM-tiny INT8; cloud Transformer served in-process as ONNX, 5-fold cross-validated, with the baseline preserved in `backend/app/model_old/`). Remaining work: per-slice breakdowns (§3.3) and the continuous-wear /day pass (§3.2).*

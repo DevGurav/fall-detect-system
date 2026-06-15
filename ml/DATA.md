@@ -1,6 +1,10 @@
-# Data — WEDA-FALL, SmartFall, UP-Fall, Indian-ADL
+# Data — WEDA-FALL, SmartFall, UP-Fall  (Indian-ADL: dropped)
 
 This sub-project trains the edge **prediction** model and cloud **detection** model on **wrist-worn** IMU datasets. Building a wrist-worn product on waist-mounted data (KFall, SisFall) is a sensor-position domain mismatch we explicitly reject.
+
+> **Indian-ADL collection was dropped** (ADR-013) in favour of per-user fit-at-first
+> calibration. The §4 description is kept for provenance; no Indian-ADL data was
+> recorded.
 
 **Data is not committed to git** (see `.gitignore`).
 
@@ -98,9 +102,17 @@ Follow the registration link on the HAR-UP site. Extract the wrist sensor subset
 
 ---
 
-## 4. Indian-ADL supplement (collected in Week E)
+## 4. Indian-ADL supplement — DROPPED (superseded by per-user calibration, ADR-013)
 
-Collected with the virtual device or real ESP32 wristband. Covers activities **no public dataset captures** for the Indian elderly context:
+> **Not collected.** Planned for Week E, this was dropped at the mid-build audit in
+> favour of **per-user fit-at-first calibration**: instead of recording one Indian-ADL
+> corpus, the deployed system captures each user's *own* ADL distribution at a
+> ~10–15 min onboarding session (z-score normalisers + threshold override applied at
+> inference). Personalising per user beats averaging a single collected set — see
+> `docs/DECISIONS.md` ADR-013 and `docs/ARCHITECTURE.md` §4.6. The original spec is
+> kept below for provenance.
+
+The (not-executed) plan was to collect, with the virtual device or real ESP32 wristband, activities **no public dataset captures** for the Indian elderly context:
 
 - Sitting cross-legged on floor (sukhasana / padmasana)
 - Namaste / prayer poses (hands together at chest)

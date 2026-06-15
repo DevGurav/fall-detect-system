@@ -14,7 +14,7 @@ This document explains how Fall Guardian handles personal data, the legal framew
 |---|---|
 | **Data Principal** | The person whose data is being processed — i.e., the elderly user wearing the device, and the caregivers who receive alerts. |
 | **Data Fiduciary** | The entity deciding the purposes and means of processing — i.e., the operator of a Fall Guardian deployment. For the current project this is the project author; for any third-party deployment, that operator becomes the Data Fiduciary. |
-| **Data Processor** | Any third party processing data on behalf of the Data Fiduciary — e.g., Fly.io (hosting), Supabase (Postgres), Firebase (FCM), Better Stack (logs). Each is contractually bound (via their respective terms of service / DPAs) to process data only on documented instructions. |
+| **Data Processor** | Any third party processing data on behalf of the Data Fiduciary. **As built, the deployment is local-first** (see §7–§8): Postgres + Redis run in Docker on the operator's own machine, and the model artifacts live in-repo — so there is **no managed-cloud processor** for the system of record. The only third parties in the data path are **Firebase Cloud Messaging** (push tokens / notification titles), the **ngrok** tunnel (transits HTTPS traffic to the host; no storage), and optionally **Better Stack** (logs). Each is bound by its terms of service / DPA. |
 | **Significant Data Fiduciary (SDF)** | Threshold-based designation by the Government. Fall Guardian's expected scale (personal / small-deployment) is well below SDF thresholds; if scale grows, SDF obligations (Data Protection Officer appointment, DPIA, independent audit) will apply. |
 
 ---
@@ -108,13 +108,20 @@ The architecture is designed around minimisation, not as a policy on top of it:
 
 ### 7.1 Where the data lives
 
+**As built, the system is local-first** — the system of record runs on the operator's own machine, not a managed cloud.
+
 | Data category | Location | Provider | Encryption at rest | In transit |
 |---|---|---|---|---|
-| Account, devices, events | Postgres (Supabase, AWS Mumbai region preferred) | Supabase | AES-256 (Supabase default) | TLS 1.3 |
-| Triggered IMU windows (recent) | Object storage (Cloudflare R2) | Cloudflare | AES-256 | TLS 1.3 |
-| FCM tokens | Firebase Firestore | Google | Google-managed | TLS 1.3 |
-| Application logs | Better Stack | Better Stack | Provider-managed | TLS 1.3 |
-| Model artifacts | MLflow registry (self-hosted) | — | filesystem-level | TLS 1.3 |
+| Account, devices, events, calibration, retraining windows, audit | PostgreSQL 16 in local Docker (on the operator's machine) | self-hosted | OS/disk-level (operator-managed) | TLS via the ngrok tunnel |
+| FCM push tokens | `users.push_token` column in the same local Postgres (migration 0004) | self-hosted | OS/disk-level | TLS |
+| Rate-limit counters + SSE pub/sub | Redis 7 in local Docker (ephemeral; no PII) | self-hosted | n/a (in-memory) | localhost |
+| Model artifacts | committed in-repo (`backend/app/model/`, `model_old/`) — no personal data | — | n/a | n/a |
+| Application logs (optional) | stdout; optionally Better Stack drain | Better Stack | provider-managed | TLS 1.3 |
+
+There is **no object storage** (triggered windows are stored as rows in Postgres
+`retraining_samples`, not in a cloud bucket) and **no Firestore** (FCM tokens live
+in the local Postgres). The ngrok tunnel terminates TLS and forwards to the host;
+it stores nothing.
 
 ### 7.2 Security baseline
 
@@ -127,7 +134,7 @@ Per `docs/ARCHITECTURE.md` §5:
 - Pydantic schemas on every endpoint
 - Postgres row-level security
 - `audit_events` table logging every administrative action
-- Secrets managed via Cloud Secret Manager (never committed)
+- Secrets (JWT signing key, Firebase service-account JSON) kept in a **gitignored `backend/.env`**, never committed; `FG_ENVIRONMENT=production` refuses to boot with the dev JWT secret
 
 ### 7.3 Incident response
 
@@ -139,14 +146,13 @@ Suspected or confirmed data breach is reported to the Data Protection Board of I
 
 The DPDP Act permits transfer of personal data outside India to any country **except those specifically restricted** by the Central Government (no restrictions notified as of the date of this document — verify at deployment time).
 
-Fall Guardian's infrastructure choices:
+**As built, the local-first deployment minimises cross-border transfer to near-zero.** The system of record (Postgres) and all triggered windows stay on the operator's own machine; nothing is transferred to a managed-cloud database or object store. The only data that leaves the operator's machine:
 
-- **Postgres (Supabase)**: prefer the **AWS Mumbai (ap-south-1)** region. If Supabase free tier forces a non-India region, this is disclosed to users at sign-up and is documented as a known limitation pending paid-tier migration.
-- **Fly.io (FastAPI)**: prefer the `bom` (Mumbai) region for deployment.
-- **Cloudflare R2**: global; data is distributed by Cloudflare's CDN.
-- **Firebase FCM**: Google's US-based service; tokens only, no event payloads.
+- **Firebase FCM**: Google's (US-based) service. Only the **push token** and the **notification title/body** ("Fall Detected — severity, device id") cross the border — never the IMU window, the event payload, or account data.
+- **ngrok tunnel**: forwards HTTPS traffic between the phone and the host. Traffic transits ngrok's edge; it is not stored. Operators preferring no third-party transit can use the same-Wi-Fi LAN-IP path instead (see `RUN.md`).
+- **Better Stack** (optional log drain): only if `FG_BETTER_STACK_TOKEN` is set.
 
-The user is informed of the operating regions at sign-up. Users who require strictly-India-resident processing should not use the current deployment.
+The original managed-cloud plan (Supabase/Fly.io in the `ap-south-1`/`bom` Mumbai region, Cloudflare R2) was dropped in favour of this local-first deployment (ADR-017). A future managed re-deploy should restore the India-region preference and disclose operating regions at sign-up.
 
 ---
 
@@ -178,27 +184,28 @@ The user (or their caregiver) can dispute an automated decision by contacting th
 
 ## 12. Third-party services + Data Processors
 
+As built (local-first), the third-party surface is small:
+
 | Service | Purpose | Data shared |
 |---|---|---|
-| **Supabase** | Postgres hosting | Account + event data |
-| **Fly.io** | Application hosting | All operational data (in transit through services running there) |
-| **Cloudflare R2** | Object storage | Triggered IMU windows |
-| **Firebase (FCM)** | Push notifications | Device FCM tokens; notification payloads (sender + brief title; no event details) |
-| **Better Stack** | Application logs | Structured JSON logs (no raw IMU data, no PII beyond what's in error context) |
-| **Sentry** | Error tracking | Stack traces + breadcrumbs (configured to scrub PII via beforeSend hooks) |
+| **Firebase (FCM)** | Push to a backgrounded/killed app | Device FCM token; notification title/body (severity + device id); no IMU window, no event payload, no account data |
+| **ngrok** | HTTPS tunnel from a physical phone to the local host | Transits request/response traffic to `:8000`; stores nothing |
+| **Better Stack** | Application logs (optional, off by default) | Structured JSON logs (no raw IMU, no PII beyond error context) — only if `FG_BETTER_STACK_TOKEN` is set |
+| **Supabase / Fly.io / Cloudflare R2 / Sentry** | **Not used** — dropped with the managed-cloud plan (ADR-017). Listed to confirm. | — |
 | **OpenAI / Anthropic** | **Not used** in Fall Guardian. Listed explicitly to confirm. | — |
 
-Each provider's DPA / privacy commitments are reviewed annually. Switching providers triggers a notice to all Data Principals.
+Each provider's DPA / privacy commitments are reviewed before use. Switching providers (or adding one in a future managed re-deploy) triggers a notice to all Data Principals.
 
 ---
 
 ## 13. Cookies + local storage
 
-Fall Guardian's caregiver web dashboard uses:
-
-- A first-party authentication cookie (session) — essential, no consent banner required.
-- Local storage for UI preferences (theme, language) — essential, no consent banner required.
-- **No** third-party tracking cookies, analytics cookies, or advertising cookies.
+There is **no web client** — the caregiver-facing surface is the Flutter mobile app
+(the planned Next.js web dashboard was dropped, ADR-014), so Fall Guardian sets **no
+cookies** of any kind. On the device, the app uses platform **secure storage**
+(Keychain / Keystore) to hold the user's JWTs and the per-device token; this is
+essential to authentication and is never used for tracking. **No** third-party
+tracking, analytics, or advertising SDKs are embedded.
 
 ---
 
@@ -218,6 +225,6 @@ The version + last-updated date of this policy is shown in-app on the **Settings
 
 ---
 
-*Privacy Policy v0 — drafted 2026-05-31, alongside the v3 rebuild. Will be updated as the product evolves, especially when deployment-specific details (hosting regions, third-party SDKs) are finalised.*
+*Privacy Policy — drafted 2026-05-31 alongside the v3 rebuild; updated for the as-built **local-first** deployment (Docker Postgres/Redis on the operator's machine + an ngrok tunnel; FCM tokens in local Postgres; no managed-cloud processor; no web client). See ADR-014 (dashboard dropped) and ADR-017 (local deployment). To be revisited if the project is re-deployed to a managed cloud.*
 
 *Legal note: this document is drafted to satisfy the DPDP Act 2023 framework based on the project author's understanding of the Act and the Draft DPDP Rules. It is not legal advice and should be reviewed by a qualified legal practitioner before any commercial deployment.*
