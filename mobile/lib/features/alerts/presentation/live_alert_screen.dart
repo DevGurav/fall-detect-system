@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/config/env.dart';
 import '../../../core/network/fall_event_service.dart';
+import '../../auth/presentation/widgets/logout_action.dart';
 import '../../emergency/data/emergency_service.dart';
 import '../../pairing/presentation/pairing_screen.dart';
 import '../application/alert_providers.dart';
@@ -39,6 +40,7 @@ class LiveAlertScreen extends ConsumerWidget {
               MaterialPageRoute<void>(builder: (_) => const PairingScreen()),
             ),
           ),
+          const LogoutAction(),
         ],
       ),
       body: feed.isEmpty

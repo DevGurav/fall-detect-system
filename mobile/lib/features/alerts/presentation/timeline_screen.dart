@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../auth/presentation/widgets/logout_action.dart';
 import '../application/timeline_providers.dart';
 import '../data/event_repository.dart';
 import '../data/models/fall_event.dart' show FallSeverity;
@@ -15,7 +16,10 @@ class TimelineScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(timelineProvider);
     return Scaffold(
-      appBar: AppBar(title: const Text('Timeline')),
+      appBar: AppBar(
+        title: const Text('Timeline'),
+        actions: const [LogoutAction()],
+      ),
       body: RefreshIndicator(
         onRefresh: () => ref.read(timelineProvider.notifier).refresh(),
         child: switch (async) {
