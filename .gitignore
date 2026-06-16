@@ -35,12 +35,12 @@ ml/data/external/**
 !ml/data/external/.gitkeep
 
 # ─── ML artifacts ────────────────────────────────────────────────
-#mlruns/
+mlruns/
 mlflow.db
-#ml/mlruns/
+ml/mlruns/
 ml/mlartifacts/
 ml/mlflow.db
-#ml/artifacts/
+ml/artifacts/
 ml/models/*.pt
 ml/models/*.pth
 ml/models/*.onnx
@@ -99,3 +99,4 @@ docs/journey.md
 docs/FUTURE_IDEAS.md
 docs/CONCEPTS_AND_TERMINOLOGY.md
 journey-doc-creation-process/
+ml/mlruns/phase-30-colab/colab-script/fallguardian-phase-30-5-fold-cross-validation.ipynb
