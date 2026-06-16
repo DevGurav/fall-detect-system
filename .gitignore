@@ -35,12 +35,12 @@ ml/data/external/**
 !ml/data/external/.gitkeep
 
 # ─── ML artifacts ────────────────────────────────────────────────
-mlruns/
+#mlruns/
 mlflow.db
-ml/mlruns/
+#ml/mlruns/
 ml/mlartifacts/
 ml/mlflow.db
-ml/artifacts/
+#ml/artifacts/
 ml/models/*.pt
 ml/models/*.pth
 ml/models/*.onnx

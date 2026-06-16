@@ -1,0 +1,40 @@
+{
+  "run_id": "51ed57eef3c34316bc044d316714cfc3",
+  "mode": "single-split",
+  "data_source": "WEDA-FALL",
+  "n_params": 137858,
+  "threshold": 0.08177618682384491,
+  "test": {
+    "threshold": 0.08177618682384491,
+    "recall": 0.9866666666666667,
+    "precision": 0.6090534979423868,
+    "f1": 0.7531806615776081,
+    "fpr": 0.05416191562143672,
+    "fpr_adl": 0.050156739811912224,
+    "specificity": 0.9458380843785633,
+    "tp": 148.0,
+    "fp": 95.0,
+    "tn": 1659.0,
+    "fn": 2.0,
+    "n_positive": 150.0,
+    "n_adl": 1276.0
+  },
+  "severity_mae_ms2": 1.0936497449874878,
+  "calibration": {
+    "brier_raw": 0.015416317619383335,
+    "brier_calibrated": 0.015428212471306324
+  },
+  "targets": {
+    "recall": 0.97,
+    "fpr_adl": 0.02
+  },
+  "sample_inference": {
+    "is_fall": true,
+    "confidence": 0.8674991130828857,
+    "severity": "high",
+    "action": "alert_caregiver",
+    "lead_time_ms": null,
+    "model_version": "cloud-transformer-v0.1"
+  },
+  "checkpoint": "C:\\Users\\devgu\\Downloads\\Project\\Personal\\Repos\\fall-detect-system\\ml\\artifacts\\cloud\\transformer_detector_fp32.pt"
+}

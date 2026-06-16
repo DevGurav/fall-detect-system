@@ -1,0 +1,8 @@
+{
+  "is_fall": true,
+  "confidence": 0.6195672750473022,
+  "severity": "high",
+  "action": "alert_caregiver",
+  "lead_time_ms": null,
+  "model_version": "cloud-transformer-v0.1-synthetic"
+}

@@ -1,0 +1,39 @@
+{
+  "run_id": "8c5178e0d12840f584f4406f018a4c15",
+  "data_source": "SYNTHETIC",
+  "n_params": 137858,
+  "threshold": 0.5469284057617188,
+  "test": {
+    "threshold": 0.5469284057617188,
+    "recall": 0.95,
+    "precision": 1.0,
+    "f1": 0.9743589743589743,
+    "fpr": 0.0,
+    "fpr_adl": 0.0,
+    "specificity": 1.0,
+    "tp": 38.0,
+    "fp": 0.0,
+    "tn": 100.0,
+    "fn": 2.0,
+    "n_positive": 40.0,
+    "n_adl": 100.0
+  },
+  "severity_mae_ms2": 17.4783935546875,
+  "calibration": {
+    "val_brier_raw": 0.10761112719774246,
+    "val_brier_calibrated": 0.024946216493844986
+  },
+  "targets": {
+    "recall": 0.97,
+    "fpr_adl": 0.02
+  },
+  "sample_inference": {
+    "is_fall": true,
+    "confidence": 0.6195672750473022,
+    "severity": "high",
+    "action": "alert_caregiver",
+    "lead_time_ms": null,
+    "model_version": "cloud-transformer-v0.1-synthetic"
+  },
+  "checkpoint": "C:\\Users\\devgu\\Downloads\\Project\\Personal\\Repos\\fall-detect-system\\ml\\artifacts\\cloud\\transformer_detector_fp32.pt"
+}
