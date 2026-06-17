@@ -4,4 +4,11 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Debug-only: permit plain-HTTP (cleartext) so the app can reach a local
+         backend at http://<lan-ip>:8000 during development. Android blocks
+         cleartext by default for apps targeting API 28+, which is why the phone
+         browser can load /health but the app cannot. This merges into the debug
+         build only — release builds stay HTTPS-only (use the ngrok tunnel for a
+         physical phone). -->
+    <application android:usesCleartextTraffic="true" />
 </manifest>
