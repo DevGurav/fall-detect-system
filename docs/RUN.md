@@ -188,6 +188,13 @@ What happens:
 Useful variants:
 
 ```powershell
+# DEMO MODE (best for a 10-15 s screen recording): a few seconds of silent
+# on-wrist monitoring (nothing uploaded), then a fall trips the one upload.
+python virtual_device.py --pair --email YOU --password PW --wear
+
+# Tune the lead-in (default 8 s of monitoring before the fall fires)
+python virtual_device.py --pair --email YOU --password PW --wear --wear-seconds 6
+
 # Send several falls + ADLs to show confirm-vs-suppress
 python virtual_device.py --pair --email YOU --password PW --kind both --count 10
 
@@ -288,6 +295,9 @@ Arrange on one screen: VS Code with the 3 terminals tiled on the left, the
    show — narrate this.
 5. **Fire the fall:** run the §4 `--pair … --kind fall --count 1` command. Show
    the terminal printing the confirmed-fall response.
+   - **For a tight 10-15 s clip, use `--wear` instead** (§4 demo mode): it shows a
+     few seconds of silent on-wrist monitoring, then the fall trips the one upload —
+     a natural cause→effect arc that fits the recording budget without editing.
 6. **The payoff:** cut to the phone — the **OS notification** pops. Tap it →
    timeline → **Acknowledge**.
 7. **Bonus:** run `--kind both --count 10` to show ADLs being *suppressed* and

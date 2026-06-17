@@ -39,6 +39,10 @@ Examples
 
     # Inspect the payloads without hitting the network
     python virtual_device.py --kind fall --count 2 --dry-run
+
+    # Continuous-wear demo, paced for a 10-15 s screen recording: a few seconds of
+    # silent on-wrist monitoring (nothing uploaded), then a fall trips one upload.
+    python virtual_device.py --pair --email me@example.com --password supersecret --wear
 """
 from __future__ import annotations
 
@@ -61,6 +65,10 @@ WINDOW_S = WINDOW_SAMPLES / SAMPLE_RATE_HZ
 # How much of the window sits *before* the impact instant for a fall replay, so
 # the slice carries the pre-impact lead the edge model is trained to predict.
 FALL_PRE_IMPACT_S = 1.0
+# Display-only: the edge model "fires" (and uploads) above this probability. The
+# real firmware threshold lives in the ESP32 build; here it just labels the wear
+# narration so the silent-vs-trigger split reads clearly on screen.
+EDGE_FIRE_THRESHOLD = 0.5
 
 # WEDA-FALL lives under the repo's ml/ data tree; resolve relative to this file so
 # the script is location-independent inside virtual_device/.
@@ -364,6 +372,77 @@ def _summarize(trial: Trial, status: int, body: dict | str, false_alarm: bool) -
     )
 
 
+# ─── Continuous-wear demo ─────────────────────────────────────────────────────
+
+
+def run_wear(
+    args: argparse.Namespace, session: requests.Session, fall_ts: dict
+) -> int:
+    """Continuous-wear DEMO: narrate the silent edge loop, then one real fall.
+
+    This mirrors how the firmware behaves on the wrist. The watch runs the edge
+    model locally on every window and stays **silent on normal motion**, opening a
+    connection to the cloud ONLY when the edge model fires. So the monitoring lines
+    below are local-only (nothing is uploaded); just the final fall window is
+    POSTed — which is what trips the SSE/FCM alert to the phone.
+
+    Paced for a 10–15 s screen recording: ``--wear-seconds`` of monitoring, then
+    the fall. See docs/RUN.md §7.
+    """
+    adl_trials = discover_trials(args.data_dir, "adl")
+    fall_trials = discover_trials(args.data_dir, "fall")
+    if not adl_trials:
+        raise SystemExit(f"wear mode needs ADL (D*) trials; none found under {args.data_dir}")
+    if not fall_trials:
+        raise SystemExit(f"wear mode needs fall (F*) trials; none found under {args.data_dir}")
+
+    rng = random.Random(args.seed)
+    token = None if args.dry_run else resolve_device_token(args, session)
+
+    print(
+        f"\n[wear] watch worn - edge model live @ {SAMPLE_RATE_HZ} Hz, "
+        f"uploads only when p_pre_impact > {EDGE_FIRE_THRESHOLD:.2f}\n"
+    )
+
+    # Monitoring phase: normal daily motion, evaluated locally, nothing uploaded.
+    start = time.monotonic()
+    while (elapsed := time.monotonic() - start) < args.wear_seconds:
+        trial = rng.choice(adl_trials)
+        p = rng.uniform(0.01, 0.18)
+        print(
+            f"[wear] t={elapsed:4.1f}s  {trial.activity}/{trial.prefix:<10}  "
+            f"edge p={p:4.2f}  -> normal motion, no upload"
+        )
+        time.sleep(1.0)
+
+    # Trigger: a fall fires the edge model -> the one emergency upload.
+    trial = rng.choice(fall_trials)
+    samples = build_window(trial, fall_ts)
+    envelope = build_envelope(
+        args.device_id, samples, false_alarm=False, edge_prob=args.edge_prob
+    )
+    elapsed = time.monotonic() - start
+    print(
+        f"\n[wear] t={elapsed:4.1f}s  !! FALL IMMINENT  "
+        f"{trial.activity}/{trial.prefix}  edge p={args.edge_prob:.2f}  "
+        f"-> POST /v1/inference"
+    )
+    if args.dry_run:
+        peak = max((s["ax"] ** 2 + s["ay"] ** 2 + s["az"] ** 2) ** 0.5 for s in samples)
+        print(f"[wear] (dry-run) samples={len(samples)} peak|a|={peak:.1f} m/s^2 - not sent\n")
+        return 0
+
+    status, body = send_window(
+        session, args.base_url, token, envelope, false_alarm=False, timeout=args.timeout
+    )
+    print(f"[wear] cloud {_summarize(trial, status, body, False)}")
+    if status < 400 and isinstance(body, dict) and body.get("is_fall"):
+        print("[wear] -> caregiver alerted over SSE/FCM\n")
+    else:
+        print("[wear] (no alert — see the response above)\n")
+    return 0
+
+
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
 
@@ -383,6 +462,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--edge-prob", type=float, default=0.9, help="Synthetic edge p_pre_impact on emergency uploads.")
     p.add_argument("--interval", type=float, default=1.0, help="Seconds to wait between sends.")
+    p.add_argument(
+        "--wear",
+        action="store_true",
+        help="Continuous-wear DEMO: narrate the silent on-wrist edge loop, then trigger "
+             "one real fall upload. Paced for a 10-15 s screen recording (docs/RUN.md §7).",
+    )
+    p.add_argument(
+        "--wear-seconds",
+        type=float,
+        default=8.0,
+        help="Seconds of normal-motion monitoring before the fall triggers (wear mode).",
+    )
     p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR, help="WEDA-FALL 50Hz dataset dir.")
     p.add_argument("--seed", type=int, default=None, help="Seed the trial picker for reproducible runs.")
     p.add_argument("--timeout", type=float, default=15.0, help="HTTP timeout (seconds).")
@@ -401,6 +492,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+
+    if args.wear:
+        return run_wear(args, requests.Session(), _load_fall_timestamps())
+
     trials = discover_trials(args.data_dir, args.kind)
     if not trials:
         raise SystemExit(f"no '{args.kind}' trials found under {args.data_dir}")
