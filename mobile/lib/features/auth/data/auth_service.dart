@@ -36,8 +36,11 @@ class AuthService {
             body: jsonEncode({'email': email, 'password': password}),
           )
           .timeout(const Duration(seconds: 15));
-    } on Exception {
-      throw AuthException('Network error — check your connection and the server.');
+    } on Exception catch (e) {
+      // Surface the target URL and the underlying cause — a generic "network
+      // error" hides whether the address is wrong, the server is down, or the
+      // request timed out.
+      throw AuthException("Couldn't reach the server at $baseUrl.\n$e");
     }
     switch (res.statusCode) {
       case 200:
@@ -72,8 +75,11 @@ class AuthService {
             }),
           )
           .timeout(const Duration(seconds: 15));
-    } on Exception {
-      throw AuthException('Network error — check your connection and the server.');
+    } on Exception catch (e) {
+      // Surface the target URL and the underlying cause — a generic "network
+      // error" hides whether the address is wrong, the server is down, or the
+      // request timed out.
+      throw AuthException("Couldn't reach the server at $baseUrl.\n$e");
     }
     switch (res.statusCode) {
       case 200:
