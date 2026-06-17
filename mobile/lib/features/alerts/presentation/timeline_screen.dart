@@ -4,11 +4,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../auth/presentation/widgets/account_menu.dart';
 import '../application/timeline_providers.dart';
 import '../data/event_repository.dart';
-import '../data/models/fall_event.dart' show FallSeverity;
+import 'widgets/alert_format.dart';
+import 'widgets/event_detail_sheet.dart';
 
-String _two(int n) => n.toString().padLeft(2, '0');
-
-/// The caregiver fall timeline — history of confirmed falls with acknowledge.
+/// The caregiver fall timeline — history of confirmed falls, grouped by day,
+/// with a summary header and per-event acknowledge.
 class TimelineScreen extends ConsumerWidget {
   const TimelineScreen({super.key});
 
@@ -25,8 +25,8 @@ class TimelineScreen extends ConsumerWidget {
         child: switch (async) {
           AsyncError(:final error) => _Message(
               scrollable: true,
-              icon: Icons.cloud_off,
-              title: "Couldn't load the timeline",
+              icon: Icons.cloud_off_rounded,
+              title: "Couldn't load history",
               subtitle: '$error',
             ),
           AsyncData(:final value) => value.isEmpty
@@ -34,17 +34,151 @@ class TimelineScreen extends ConsumerWidget {
                   scrollable: true,
                   icon: Icons.inbox_outlined,
                   title: 'No falls yet',
-                  subtitle: 'Confirmed falls will appear here.',
+                  subtitle: 'Confirmed falls and SOS alerts will appear here.',
                 )
-              : ListView.separated(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  padding: const EdgeInsets.all(12),
-                  itemCount: value.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 8),
-                  itemBuilder: (_, i) => _EventTile(event: value[i]),
-                ),
+              : _TimelineList(events: value),
           _ => const Center(child: CircularProgressIndicator()),
         },
+      ),
+    );
+  }
+}
+
+/// Builds the grouped, summarised list. Items are a flat sequence of headers,
+/// day labels, and event tiles so it scrolls as one [ListView].
+class _TimelineList extends StatelessWidget {
+  const _TimelineList({required this.events});
+
+  final List<TimelineEvent> events;
+
+  @override
+  Widget build(BuildContext context) {
+    final unacked = events.where((e) => !e.isAcknowledged).length;
+
+    // Group consecutive events by day label, preserving newest-first order.
+    final items = <Widget>[
+      _SummaryHeader(total: events.length, unacked: unacked),
+    ];
+    String? currentDay;
+    for (final e in events) {
+      final label = dayLabel(e.occurredAt);
+      if (label != currentDay) {
+        currentDay = label;
+        items.add(_DayHeader(label: label));
+      }
+      items.add(_EventTile(event: e));
+    }
+
+    return ListView.builder(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
+      itemCount: items.length,
+      itemBuilder: (_, i) => items[i],
+    );
+  }
+}
+
+class _SummaryHeader extends StatelessWidget {
+  const _SummaryHeader({required this.total, required this.unacked});
+
+  final int total;
+  final int unacked;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: _StatChip(
+              icon: Icons.history_rounded,
+              value: '$total',
+              label: total == 1 ? 'event' : 'events',
+              color: theme.colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _StatChip(
+              icon: unacked == 0
+                  ? Icons.check_circle_rounded
+                  : Icons.notifications_active_rounded,
+              value: '$unacked',
+              label: 'to review',
+              color: unacked == 0
+                  ? Colors.green
+                  : const Color(0xFFF97316),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatChip extends StatelessWidget {
+  const _StatChip({
+    required this.icon,
+    required this.value,
+    required this.label,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String value;
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 22),
+          const SizedBox(width: 12),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(value,
+                  style: theme.textTheme.titleLarge
+                      ?.copyWith(fontWeight: FontWeight.w800, height: 1)),
+              Text(label,
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DayHeader extends StatelessWidget {
+  const _DayHeader({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 18, 4, 8),
+      child: Text(
+        label.toUpperCase(),
+        style: theme.textTheme.labelMedium?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.8,
+        ),
       ),
     );
   }
@@ -54,13 +188,6 @@ class _EventTile extends ConsumerWidget {
   const _EventTile({required this.event});
 
   final TimelineEvent event;
-
-  Color get _color => switch (event.severity) {
-        FallSeverity.high => Colors.red,
-        FallSeverity.medium => Colors.deepOrange,
-        FallSeverity.low => Colors.amber,
-        FallSeverity.none => Colors.blueGrey,
-      };
 
   Future<void> _ack(BuildContext context, WidgetRef ref) async {
     try {
@@ -76,48 +203,91 @@ class _EventTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final color = _color;
-    final t = event.occurredAt;
-    final when = '${_two(t.day)}/${_two(t.month)} ${_two(t.hour)}:${_two(t.minute)}';
-    return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Row(
-          children: [
-            CircleAvatar(
-              backgroundColor: color.withValues(alpha: 0.15),
-              child: Icon(Icons.warning_amber_rounded, color: color),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Device ${event.deviceRef}',
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleMedium
-                        ?.copyWith(fontWeight: FontWeight.bold),
+    final theme = Theme.of(context);
+    final style = severityStyle(event.severity);
+    final subtitle = showsConfidence(event.deviceRef, event.confidence)
+        ? '${relativeTime(event.occurredAt)} · ${confidenceLabel(event.confidence)}'
+        : '${relativeTime(event.occurredAt)} · ${sourceLabel(event.deviceRef)}';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: theme.colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () => showEventDetailSheet(
+            context,
+            deviceId: event.deviceRef,
+            severity: event.severity,
+            confidence: event.confidence,
+            occurredAt: event.occurredAt,
+            leadTimeMs: event.leadTimeMs,
+            modelVersion: event.modelVersion,
+            acknowledgedAt: event.acknowledgedAt,
+          ),
+          child: IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(width: 5, color: style.color),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 42,
+                          height: 42,
+                          decoration: BoxDecoration(
+                            color: style.color.withValues(alpha: 0.15),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                              alertIcon(event.deviceRef, event.severity),
+                              color: style.color,
+                              size: 22),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                alertTitle(event.deviceRef),
+                                style: theme.textTheme.titleMedium
+                                    ?.copyWith(fontWeight: FontWeight.w700),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                subtitle,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                    color: theme.colorScheme.onSurfaceVariant),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        if (event.isAcknowledged)
+                          const _AckChip()
+                        else
+                          FilledButton.tonal(
+                            onPressed: () => _ack(context, ref),
+                            style: FilledButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 14),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            child: const Text('Ack'),
+                          ),
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    '${event.severity.label} • ${(event.confidence * 100).round()}% • $when',
-                    style: TextStyle(color: color, fontWeight: FontWeight.w600),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
-            const SizedBox(width: 8),
-            if (event.isAcknowledged)
-              const _AckChip()
-            else
-              FilledButton.tonal(
-                onPressed: () => _ack(context, ref),
-                child: const Text('Acknowledge'),
-              ),
-          ],
+          ),
         ),
       ),
     );
@@ -129,13 +299,12 @@ class _AckChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Row(
+    return const Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        const Icon(Icons.check_circle, size: 18, color: Colors.green),
-        const SizedBox(width: 4),
-        Text('Acked', style: TextStyle(color: scheme.onSurfaceVariant)),
+        Icon(Icons.check_circle_rounded, size: 18, color: Colors.green),
+        SizedBox(width: 4),
+        Text('Acked', style: TextStyle(color: Colors.green, fontWeight: FontWeight.w600)),
       ],
     );
   }
@@ -162,15 +331,27 @@ class _Message extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 64, color: theme.colorScheme.onSurfaceVariant),
-          const SizedBox(height: 16),
-          Text(title, textAlign: TextAlign.center, style: theme.textTheme.titleMedium),
+          Container(
+            width: 96,
+            height: 96,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest
+                  .withValues(alpha: 0.5),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, size: 46, color: theme.colorScheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 20),
+          Text(title,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.titleLarge
+                  ?.copyWith(fontWeight: FontWeight.w700)),
           if (subtitle != null) ...[
-            const SizedBox(height: 6),
+            const SizedBox(height: 8),
             Text(
               subtitle!,
               textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall
+              style: theme.textTheme.bodyMedium
                   ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
             ),
           ],

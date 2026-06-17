@@ -7,9 +7,11 @@ import '../../auth/presentation/widgets/account_menu.dart';
 import '../../emergency/data/emergency_service.dart';
 import '../application/alert_providers.dart';
 import '../data/models/fall_event.dart';
+import 'widgets/alert_format.dart';
+import 'widgets/event_detail_sheet.dart';
 
 /// The caregiver's live alert screen — consumes the SSE feed via Riverpod and
-/// renders connection status + a newest-first list of confirmed falls.
+/// renders a connection-aware state plus a newest-first list of confirmed falls.
 class LiveAlertScreen extends ConsumerWidget {
   const LiveAlertScreen({super.key});
 
@@ -36,16 +38,289 @@ class LiveAlertScreen extends ConsumerWidget {
         ],
       ),
       body: feed.isEmpty
-          ? const _EmptyState()
-          : ListView.separated(
-              // Extra bottom padding so the SOS FAB never covers the last card.
-              padding: const EdgeInsets.only(
-                  left: 12, right: 12, top: 12, bottom: 96),
-              itemCount: feed.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 8),
-              itemBuilder: (_, i) => _AlertCard(event: feed[i], hero: i == 0),
+          ? _EmptyState(status: status.value ?? SseStatus.connecting)
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _FeedSummary(feed: feed),
+                Expanded(
+                  child: ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(14, 4, 14, 100),
+                    itemCount: feed.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    itemBuilder: (_, i) => _AlertCard(event: feed[i], hero: i == 0),
+                  ),
+                ),
+              ],
             ),
       floatingActionButton: const _SosFab(),
+    );
+  }
+}
+
+// ── feed summary strip (shown above the list when alerts exist) ────────────────
+
+class _FeedSummary extends StatelessWidget {
+  const _FeedSummary({required this.feed});
+
+  final List<FallEvent> feed;
+
+  FallSeverity get _worst => feed
+      .map((e) => e.severity)
+      .reduce((a, b) => a.index >= b.index ? a : b);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final style = severityStyle(_worst);
+    final n = feed.length;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(14, 12, 14, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [style.color.withValues(alpha: 0.18), style.color.withValues(alpha: 0.04)],
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: style.color.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.notifications_active_rounded, color: style.color),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  n == 1 ? '1 alert this session' : '$n alerts this session',
+                  style: theme.textTheme.titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                ),
+                Text(
+                  'Most recent ${relativeTime(feed.first.occurredAt)}',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                ),
+              ],
+            ),
+          ),
+          SeverityPill(severity: _worst),
+        ],
+      ),
+    );
+  }
+}
+
+// ── alert card ────────────────────────────────────────────────────────────────
+
+class _AlertCard extends StatelessWidget {
+  const _AlertCard({required this.event, required this.hero});
+
+  final FallEvent event;
+  final bool hero;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final style = severityStyle(event.severity);
+    final manual = isManualSos(event.deviceId);
+
+    return Material(
+      color: theme.colorScheme.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(16),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => showEventDetailSheet(
+          context,
+          deviceId: event.deviceId,
+          severity: event.severity,
+          confidence: event.confidence,
+          occurredAt: event.occurredAt,
+          leadTimeMs: event.leadTimeMs,
+          modelVersion: event.modelVersion,
+        ),
+        child: Container(
+          decoration: BoxDecoration(
+            border: Border.all(
+              color: hero ? style.color : theme.colorScheme.outlineVariant,
+              width: hero ? 1.6 : 1,
+            ),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(width: 5, color: style.color),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 46,
+                          height: 46,
+                          decoration: BoxDecoration(
+                            color: style.color.withValues(alpha: 0.15),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(alertIcon(event.deviceId, event.severity),
+                              color: style.color),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      alertTitle(event.deviceId),
+                                      style: theme.textTheme.titleMedium
+                                          ?.copyWith(fontWeight: FontWeight.w700),
+                                    ),
+                                  ),
+                                  Text(
+                                    relativeTime(event.occurredAt),
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                        color: theme.colorScheme.onSurfaceVariant),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              Row(
+                                children: [
+                                  SeverityPill(severity: event.severity),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      manual
+                                          ? sourceLabel(event.deviceId)
+                                          : showsConfidence(
+                                                  event.deviceId, event.confidence)
+                                              ? confidenceLabel(event.confidence)
+                                              : sourceLabel(event.deviceId),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: theme.textTheme.bodySmall?.copyWith(
+                                          color:
+                                              theme.colorScheme.onSurfaceVariant),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        Icon(Icons.chevron_right_rounded,
+                            color: theme.colorScheme.onSurfaceVariant),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── connection-aware empty state ──────────────────────────────────────────────
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState({required this.status});
+
+  final SseStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    // (icon, tint, title, subtitle, showPulse)
+    final (IconData icon, Color tint, String title, String subtitle, bool live) =
+        switch (status) {
+      SseStatus.connected => (
+          Icons.shield_rounded,
+          scheme.primary,
+          'All clear',
+          "Fall Guardian is watching in real time.\nYou'll be alerted the moment a fall is detected.",
+          true,
+        ),
+      SseStatus.connecting => (
+          Icons.wifi_tethering_rounded,
+          const Color(0xFFF59E0B),
+          'Connecting…',
+          'Linking to the alert stream.',
+          false,
+        ),
+      SseStatus.reconnecting => (
+          Icons.wifi_tethering_rounded,
+          const Color(0xFFF97316),
+          'Reconnecting…',
+          'The connection dropped — trying again.',
+          false,
+        ),
+      SseStatus.unauthorized => (
+          Icons.lock_outline_rounded,
+          const Color(0xFFEF4444),
+          'Please sign in again',
+          'Your session expired, so alerts are paused.',
+          false,
+        ),
+      SseStatus.stopped => (
+          Icons.cloud_off_rounded,
+          scheme.onSurfaceVariant,
+          'Offline',
+          'Not receiving alerts right now.',
+          false,
+        ),
+    };
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 110,
+              height: 110,
+              decoration: BoxDecoration(
+                color: tint.withValues(alpha: 0.12),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, size: 54, color: tint),
+            ),
+            const SizedBox(height: 24),
+            Text(title,
+                style: theme.textTheme.headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 8),
+            Text(subtitle,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(color: scheme.onSurfaceVariant)),
+            if (live) ...[
+              const SizedBox(height: 20),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  PulsingDot(color: scheme.primary),
+                  const SizedBox(width: 8),
+                  Text('Live',
+                      style: theme.textTheme.labelLarge?.copyWith(
+                          color: scheme.primary, fontWeight: FontWeight.w700)),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }
@@ -136,7 +411,7 @@ class _SosFabState extends ConsumerState<_SosFab> {
   }
 }
 
-// ── supporting widgets ────────────────────────────────────────────────────────
+// ── status badge ──────────────────────────────────────────────────────────────
 
 class _StatusBadge extends StatelessWidget {
   const _StatusBadge({required this.status});
@@ -156,95 +431,12 @@ class _StatusBadge extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(Icons.circle, size: 10, color: color),
+        s == SseStatus.connected
+            ? PulsingDot(color: color, size: 9)
+            : Icon(Icons.circle, size: 10, color: color),
         const SizedBox(width: 6),
         Text(label, style: Theme.of(context).textTheme.labelMedium),
       ],
-    );
-  }
-}
-
-class _EmptyState extends StatelessWidget {
-  const _EmptyState();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.shield_outlined,
-              size: 72, color: Theme.of(context).colorScheme.primary),
-          const SizedBox(height: 16),
-          Text('All clear', style: Theme.of(context).textTheme.headlineSmall),
-          const SizedBox(height: 4),
-          const Text('Watching for falls in real time.'),
-        ],
-      ),
-    );
-  }
-}
-
-class _AlertCard extends StatelessWidget {
-  const _AlertCard({required this.event, required this.hero});
-
-  final FallEvent event;
-  final bool hero;
-
-  Color get _severityColor => switch (event.severity) {
-        FallSeverity.high => Colors.red,
-        FallSeverity.medium => Colors.deepOrange,
-        FallSeverity.low => Colors.amber,
-        FallSeverity.none => Colors.blueGrey,
-      };
-
-  @override
-  Widget build(BuildContext context) {
-    final color = _severityColor;
-    final t = event.occurredAt;
-    final time = '${t.hour.toString().padLeft(2, '0')}:'
-        '${t.minute.toString().padLeft(2, '0')}';
-    return Card(
-      elevation: hero ? 4 : 1,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
-        side: BorderSide(color: hero ? color : Colors.transparent, width: 2),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            CircleAvatar(
-              radius: 24,
-              backgroundColor: color.withValues(alpha: 0.15),
-              child: Icon(Icons.warning_amber_rounded, color: color),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Fall detected',
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleMedium
-                        ?.copyWith(fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 2),
-                  Text('Device ${event.deviceId} • $time'),
-                  const SizedBox(height: 2),
-                  Text(
-                    '${event.severity.label} severity • '
-                    '${(event.confidence * 100).round()}% confidence',
-                    style: TextStyle(color: color, fontWeight: FontWeight.w600),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

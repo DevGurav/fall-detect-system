@@ -1073,3 +1073,15 @@ Two related rough edges in the caregiver app, both spotted while preparing demo 
 Testing the app on a real phone over the same Wi-Fi (rather than the emulator) surfaced a confusing failure: the phone's *browser* could load `http://<lan-ip>:8000/health` fine, but the *app* failed every request with "Network error". Cause: Android blocks cleartext (plain-HTTP) traffic by default for apps targeting API 28+, and the app targets `flutter.targetSdkVersion` (35). The browser isn't subject to the app's network policy, which is why it worked and the app didn't.
 
 Added `android:usesCleartextTraffic="true"` to the **debug** manifest only (`android/app/src/debug/AndroidManifest.xml`), so a debug build can reach a local HTTP backend over the LAN while release builds stay HTTPS-only. The documented physical-phone path remains the ngrok HTTPS tunnel (RUN.md §2a), which sidesteps cleartext entirely; this just makes the simpler same-Wi-Fi LAN path work for quick local testing. Run with the LAN origin baked in: `flutter run --dart-define=FG_BASE_URL=http://<lan-ip>:8000`.
+
+### Live + History screens redesigned (2026-06-18)
+
+The two main caregiver screens were functional but plain, and a manual SOS alert rendered awkwardly — "Device manual-sos • 0% confidence" — because SOS rides the same alert channel as a detected fall but carries the sentinel device id `manual-sos` and no model confidence. Reworked both screens around a small shared presentation layer.
+
+**Shared helpers** (`features/alerts/presentation/widgets/alert_format.dart`): one source of truth for severity colour/label/icon, relative-time formatting ("just now", "5m ago"), day-bucket labels for grouping, manual-SOS detection, and reusable `PulsingDot` / `SeverityPill` widgets — so the live feed and the timeline stay visually consistent and the per-screen duplication is gone.
+
+**Manual SOS handled properly**: a manual alert now reads "Emergency SOS" with its own icon and "Triggered manually" instead of a meaningless "0% confidence". Confidence is only shown when it's a real model verdict.
+
+**Live screen**: a connection-aware empty state (All clear / Connecting / Reconnecting / Offline / Sign in, each with its own icon and copy, plus a pulsing "Live" indicator when connected); a severity-tinted summary strip above the list when alerts exist; and richer alert cards with a severity accent bar, severity pill, relative time, and a chevron.
+
+**History screen**: a summary header (total events + how many still need review), events grouped under day headers (Today / Yesterday / date), and the same card styling. Both screens open a shared **detail bottom sheet** on tap — time, source, confidence, pre-impact lead, model version, acknowledge status — which finally gives the model metadata a home. `flutter analyze`: no issues.
