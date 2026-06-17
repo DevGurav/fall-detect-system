@@ -3,6 +3,7 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/app/app_shell_state.dart';
+import 'core/theme/app_theme.dart';
 import 'features/alerts/application/alert_providers.dart';
 import 'features/alerts/presentation/live_alert_screen.dart';
 import 'features/alerts/presentation/timeline_screen.dart';
@@ -72,10 +73,9 @@ class FallGuardianApp extends StatelessWidget {
     return MaterialApp(
       title: 'Fall Guardian',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1565C0)),
-        useMaterial3: true,
-      ),
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
+      themeMode: ThemeMode.system,
       home: const _RootGate(),
     );
   }

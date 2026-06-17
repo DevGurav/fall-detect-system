@@ -42,6 +42,7 @@ class AuthService {
     switch (res.statusCode) {
       case 200:
         await _persistSession(res.body);
+        await _tokenStore.writeEmail(email);
       case 401:
         throw AuthException('Invalid email or password.');
       case 429:
@@ -78,6 +79,7 @@ class AuthService {
       case 200:
       case 201:
         await _persistSession(res.body);
+        await _tokenStore.writeEmail(email);
       case 409:
         throw AuthException('That email is already registered.');
       case 422:

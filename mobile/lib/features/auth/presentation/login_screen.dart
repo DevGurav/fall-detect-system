@@ -73,12 +73,26 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Icon(Icons.shield_moon_outlined,
-                        size: 64, color: theme.colorScheme.primary),
-                    const SizedBox(height: 16),
+                    Center(
+                      child: Container(
+                        width: 84,
+                        height: 84,
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.primaryContainer,
+                          borderRadius: BorderRadius.circular(22),
+                        ),
+                        child: Icon(
+                          Icons.shield_moon_outlined,
+                          size: 44,
+                          color: theme.colorScheme.onPrimaryContainer,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
                     Text('Fall Guardian',
                         textAlign: TextAlign.center,
-                        style: theme.textTheme.headlineMedium),
+                        style: theme.textTheme.headlineMedium
+                            ?.copyWith(fontWeight: FontWeight.w700)),
                     const SizedBox(height: 4),
                     Text(
                       'Sign in to watch over your loved ones',
@@ -96,7 +110,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       decoration: const InputDecoration(
                         labelText: 'Email',
                         prefixIcon: Icon(Icons.email_outlined),
-                        border: OutlineInputBorder(),
                       ),
                       validator: (v) => (v == null || !v.contains('@'))
                           ? 'Enter a valid email'
@@ -113,7 +126,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       decoration: InputDecoration(
                         labelText: 'Password',
                         prefixIcon: const Icon(Icons.lock_outline),
-                        border: const OutlineInputBorder(),
                         suffixIcon: IconButton(
                           icon: Icon(_obscure
                               ? Icons.visibility_outlined

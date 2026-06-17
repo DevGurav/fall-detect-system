@@ -9,11 +9,19 @@ class TokenStore {
   static const _accessKey = 'fg_access_token';
   static const _expiryKey = 'fg_token_expiry'; // epoch millis (string)
   static const _refreshKey = 'fg_refresh_token';
+  static const _emailKey = 'fg_user_email';
 
   final FlutterSecureStorage _storage;
 
   Future<String?> readAccessToken() => _storage.read(key: _accessKey);
   Future<String?> readRefreshToken() => _storage.read(key: _refreshKey);
+
+  /// The signed-in caregiver's email, shown in the account menu. Null for a
+  /// session restored from a build that predates this (token kept, email never
+  /// stored) — the UI degrades to a generic account label.
+  Future<String?> readEmail() => _storage.read(key: _emailKey);
+  Future<void> writeEmail(String email) =>
+      _storage.write(key: _emailKey, value: email);
 
   /// Persist the access token, its absolute expiry, and optionally a refresh token.
   Future<void> writeSession(
@@ -39,5 +47,6 @@ class TokenStore {
     await _storage.delete(key: _accessKey);
     await _storage.delete(key: _expiryKey);
     await _storage.delete(key: _refreshKey);
+    await _storage.delete(key: _emailKey);
   }
 }

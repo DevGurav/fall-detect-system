@@ -81,7 +81,6 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                       decoration: const InputDecoration(
                         labelText: 'Full name (optional)',
                         prefixIcon: Icon(Icons.person_outline),
-                        border: OutlineInputBorder(),
                       ),
                     ),
                     const SizedBox(height: 16),
@@ -94,7 +93,6 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                       decoration: const InputDecoration(
                         labelText: 'Email',
                         prefixIcon: Icon(Icons.email_outlined),
-                        border: OutlineInputBorder(),
                       ),
                       validator: (v) => (v == null || !v.contains('@'))
                           ? 'Enter a valid email'
@@ -110,7 +108,6 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                       decoration: InputDecoration(
                         labelText: 'Password',
                         prefixIcon: const Icon(Icons.lock_outline),
-                        border: const OutlineInputBorder(),
                         suffixIcon: IconButton(
                           icon: Icon(_obscure
                               ? Icons.visibility_outlined
@@ -132,7 +129,6 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                       decoration: const InputDecoration(
                         labelText: 'Confirm password',
                         prefixIcon: Icon(Icons.lock_outline),
-                        border: OutlineInputBorder(),
                       ),
                       validator: (v) =>
                           (v != _password.text) ? 'Passwords do not match' : null,

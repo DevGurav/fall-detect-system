@@ -19,6 +19,14 @@ final authServiceProvider = Provider<AuthService>((ref) {
 final authControllerProvider =
     NotifierProvider<AuthController, AuthStatus>(AuthController.new);
 
+/// The signed-in caregiver's email, surfaced in the account menu. Re-reads
+/// secure storage whenever the auth state changes (login → value, logout →
+/// null). Null for a session restored from a build that didn't persist it.
+final currentEmailProvider = FutureProvider<String?>((ref) async {
+  ref.watch(authControllerProvider);
+  return ref.read(tokenStoreProvider).readEmail();
+});
+
 class AuthController extends Notifier<AuthStatus> {
   Timer? _expiryTimer;
 
