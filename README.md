@@ -29,6 +29,30 @@ Industry-grade wrist-worn fall prediction & detection system for elderly users (
 
 **The headline:** the wearable can alert in the **~300 ms window between fall initiation and ground impact** — not just after the person hits the floor. The whole path runs on your laptop and can be driven end-to-end with **no hardware** via the [`virtual_device/`](virtual_device/) WEDA-FALL replay simulator.
 
+## Demo
+
+A fall fired from the [`virtual_device/`](virtual_device/) simulator → confirmed by
+the cloud detector → alert on the caregiver's phone, running end-to-end on a laptop
+with **no hardware**:
+
+<p align="center">
+  <img src="docs/assets/fall-alert-demo.gif" width="90%" alt="Fall Guardian end-to-end demo — a simulated fall triggers a caregiver alert">
+</p>
+
+▶ [Full-quality screen recording](docs/assets/fall-alert-demo.mp4)
+
+### The caregiver app (Flutter)
+
+<p align="center">
+  <img src="docs/assets/fall-alert-screen.png" width="30%" alt="Live alert feed" />
+  &nbsp;&nbsp;
+  <img src="docs/assets/fall-alert-detail-screen.png" width="30%" alt="Alert detail sheet" />
+  &nbsp;&nbsp;
+  <img src="docs/assets/fall-history.png" width="30%" alt="Fall history timeline" />
+</p>
+
+<p align="center"><em>Live alerts over SSE · per-event detail (severity, confidence, model, lead time) · history with acknowledge.</em></p>
+
 ## Personalization — the local grace period
 
 A core product feature, not an afterthought: the system **learns each user's false alarms**. The edge model is recall-first and fires often by design, so when it triggers the watch first buzzes locally for a **~10 s grace period**. If the user presses **Cancel** (it wasn't a fall), no caregiver is alerted — instead the watch silently uploads that exact 2.5 s window to the cloud, where it is stored as labeled training data (`CANCELED_FALSE_ALARM`) for **per-user fine-tuning and threshold tuning**. The user is the ground truth for their own non-falls.

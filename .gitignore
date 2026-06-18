@@ -104,3 +104,6 @@ ml/mlruns/phase-30-colab/colab-script/fallguardian-phase-30-5-fold-cross-validat
 *.mp4
 LinkedIn-Post-Fall-Guardian.md
 marketing/
+
+# Demo media is committed under docs/assets/ (override the global *.mp4 rule above).
+!docs/assets/*.mp4

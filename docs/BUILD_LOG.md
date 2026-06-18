@@ -1085,3 +1085,9 @@ The two main caregiver screens were functional but plain, and a manual SOS alert
 **Live screen**: a connection-aware empty state (All clear / Connecting / Reconnecting / Offline / Sign in, each with its own icon and copy, plus a pulsing "Live" indicator when connected); a severity-tinted summary strip above the list when alerts exist; and richer alert cards with a severity accent bar, severity pill, relative time, and a chevron.
 
 **History screen**: a summary header (total events + how many still need review), events grouped under day headers (Today / Yesterday / date), and the same card styling. Both screens open a shared **detail bottom sheet** on tap — time, source, confidence, pre-impact lead, model version, acknowledge status — which finally gives the model metadata a home. `flutter analyze`: no issues.
+
+### README demo media — GIF, screenshots, compressed clip (2026-06-18)
+
+Added a **Demo** section near the top of the README so a reader sees the system working before reading a word of prose: a looping GIF of the end-to-end flow (virtual-device fall → cloud confirm → phone alert), a link to a full-quality clip, and three Flutter app screenshots (live alert, the detail sheet, history).
+
+The source recording was 37 s at 2558×1524 — 71 MB, far too heavy to commit. Using the ffmpeg bundled by `imageio-ffmpeg`, exported a palette-optimised, 2× speed, 720 px GIF (~1 MB) and a compressed 1280 px MP4 (~0.5 MB) into `docs/assets/`; the 71 MB master stays local under the gitignored `marketing/`. Fixed `.gitignore` accordingly: `marketing/` is fully ignored again (earlier negation lines had inadvertently re-exposed it), and a `!docs/assets/*.mp4` exception lets the compressed clip through the global `*.mp4` rule. The LinkedIn carousel (also under `marketing/`, local-only) now references the same screenshots from `docs/assets/` so there's a single tracked copy.
